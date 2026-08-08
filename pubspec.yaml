@@ -1,0 +1,44 @@
+name: just_dance_academy
+description: "A luxury minimal mobile application for Just Dance Academy (Begusarai) studio management."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  sqflite: ^2.3.2
+  path: ^1.9.0
+  path_provider: ^2.1.2
+  local_auth: ^2.1.8
+  url_launcher: ^6.2.5
+  google_fonts: ^6.1.0
+  intl: ^0.19.0
+  shared_preferences: ^2.2.2
+  http: ^1.2.0
+  google_sign_in: ^6.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/logo.png
+    - assets/poster.jpg
+
+  # Custom fonts can be loaded from fonts/ directory if available,
+  # falling back seamlessly to Google Fonts (Playfair Display & Manrope).
+  # fonts:
+  #   - family: PlayfairDisplay
+  #     fonts:
+  #       - asset: fonts/PlayfairDisplay-Bold.ttf
+  #   - family: Manrope
+  #     fonts:
+  #       - asset: fonts/Manrope-Regular.ttf
