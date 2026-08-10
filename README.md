@@ -1,53 +1,171 @@
-# Just Dance Academy - Mobile App (Begusarai)
+# Studio Crow — Studio Management App (Android)
 
-A luxury minimal mobile application for managing dance studio students, attendance, fee ledgers, WhatsApp notifications, biometric security, and Google Drive cloud backups.
+A complete, offline-first **Android** app in **Flutter** for a single studio owner
+(gym / dance / karate / yoga / any fitness academy) to manage:
 
-## 🏛 File Structure
+- **Students** — add with photo (square crop), full details, courses → batches → timings
+- **Fees** — ledger-based fee engine (admission fee, plans, discounts ₹/%, advance/credit, auto credit-consumption)
+- **Personal Training** — sessions, charges, live earnings
+- **Attendance** — slide-to-mark-present, per-student stats, monthly grids
+- **Collections** — admission vs membership vs PT totals (month / year / all time)
+- **WhatsApp** — one-tap ID card, invoice, welcome kit, reminders (owner presses send — NO automation)
+- **Backup** — Google Drive **appDataFolder** (private to the app), 15s debounced + daily 4AM, safe replace, restore + Undo
+- **Security** — device screen lock gate (face / fingerprint / device PIN, Google-Photos-Locked-Folder style). No custom PIN, no accounts.
 
-```
-just_dance_academy/
-├── assets/
-│   ├── logo.png           # Gold dancer-in-circle logo
-│   └── poster.jpg         # Studio poster (Phase 4 ID card)
-├── fonts/                 # Place PlayfairDisplay & Manrope .ttf files here
-├── lib/
-│   ├── main.dart
-│   ├── app.dart
-│   ├── constants.dart     # Default PIN (2026), App Info
-│   ├── database/
-│   │   ├── database_helper.dart  # sqflite wrapper
-│   │   └── seed_data.dart        # Demo students for Phase 1
-│   ├── models/
-│   │   ├── student.dart          # Student data model
-│   │   └── ledger_entry.dart     # Ledger data model (Phase 3)
-│   ├── screens/
-│   │   ├── lock_screen.dart      # Screen 0: Biometric + PIN 2026
-│   │   ├── home_screen.dart      # Screen 1: Student List + Search
-│   │   ├── admission_form_screen.dart # Screen 2 (Phase 2)
-│   │   ├── student_details_screen.dart # Screen 3 (Phase 4)
-│   │   ├── payment_dialog.dart   # Screen 4 (Phase 3)
-│   │   └── settings_screen.dart  # Screen 5 (Phase 6)
-│   ├── services/
-│   │   ├── fee_engine.dart       # Ledger math (Phase 3)
-│   │   ├── backup_service.dart   # Google Drive REST (Phase 5)
-│   │   ├── settings_service.dart # Local sqflite settings wrapper
-│   │   └── whatsapp_service.dart # url_launcher wa.me (Phase 4)
-│   ├── theme/
-│   │   ├── app_theme.dart        # Luxury minimal theme
-│   │   ├── app_colors.dart       # Matte Black, Ivory, Gold, Status dots
-│   │   └── app_fonts.dart
-│   └── widgets/
-│       ├── id_card_widget.dart   # Phase 4
-│       ├── ledger_table.dart     # Phase 3
-│       └── chip_input.dart       # Phase 2
-├── pubspec.yaml
-└── README.md
+> Language: English only. No Firebase. No cloud DB. No login system.
+
+---
+
+## 1. Building the APK
+
+```bash
+flutter pub get
+flutter analyze          # must be clean
+flutter test             # fee engine tests
+flutter build apk --release
 ```
 
-## 🔐 Default Security
-- **Security Lock PIN**: `2026`
-- **Biometric Unlock**: Supported via `local_auth`
+Output: `build/app/outputs/flutter-apk/app-release.apk`
 
-## 🎨 Theme & Styling
-- **Primary Aesthetics**: Matte Black (`#121212`), Ivory (`#FFFDF9`), Metallic Gold (`#D4AF37`)
-- **Typography**: Playfair Display (Headings) & Manrope (Body/Data)
+The template signs the release build with the debug key. For a store release,
+create your own keystore and update `android/app/build.gradle.kts`
+(`signingConfigs` block) — standard Flutter procedure.
+
+**Requirements:** Flutter 3.38+ / Dart 3.10+ (tested with 3.38.5), Android SDK.
+
+---
+
+## 2. Google Drive Backup — one-time setup (per studio)
+
+The app signs in with Google (one tap) and stores a **single latest backup file**
+in the **appDataFolder** — a private folder only this app can see (not visible in
+Drive UI, no quota of the user's Drive folder... it uses the account's Drive quota).
+
+1. Go to https://console.cloud.google.com → create a project.
+2. **APIs & Services → OAuth consent screen** → External → add your email as test user.
+3. **APIs & Services → Enabled APIs** → enable **Google Drive API**.
+4. **APIs & Services → Credentials → Create Credentials → OAuth client ID**:
+   - Type **Web application** → copy the **Client ID** (e.g. `xxxx.apps.googleusercontent.com`).
+   - Also create an **Android** client with your package name
+     (`com.studiocrow.studio_crow`) and the SHA-1 of your signing key:
+     ```bash
+     keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android
+     ```
+5. Open `lib/constants.dart` and set:
+   ```dart
+   static const String googleWebClientId = 'xxxx.apps.googleusercontent.com';
+   ```
+6. Rebuild the APK.
+
+Without this setup the app works 100% offline — only Drive backup stays
+"Not signed in" and shows a friendly message.
+
+---
+
+## 3. Fee Engine — worked examples
+
+The engine is **pure Dart** (`lib/services/fee_engine.dart`) and fully covered by
+tests in `test/fee_engine_test.dart`. All numbers are derived from the immutable
+ledger — statuses are **never stored**.
+
+| Scenario | Result |
+|---|---|
+| Course fee ₹1000/mo, Monthly plan, pay ₹1000 | due 0, paidTill = admission + 1 month |
+| Quarterly plan (₹3000), pay ₹3000 | paidTill = admission + 3 months |
+| Pay ₹1200 instead of ₹1000 | 1 month covered + **₹200 advance (credit)** |
+| Credit exists and a cycle becomes due | auto **AUTO_CREDIT_ADJUST** entry consumes it |
+| Zero payments | due starts from admission day |
+| Discount 10% on ₹3000 | ₹300 off |
+| Discount ₹500 on ₹1000 | capped to ₹1000 (never exceeds due) |
+| Jan 31 + 1 month | **Feb 28** (calendar-safe) |
+| Restore a backup | ledger replayed → identical numbers |
+
+**Status rules (computed, realtime):**
+- `Expired` = today > paidTill
+- `Due` = engine due > 0 (incl. admission fee)
+- `Inactive` = last visit (or admission) older than 7 days
+- `Near expiry` = active with ≤ 7 days left
+- `Active` = not expired / inactive / blocked
+- `today == paidTill` = PAID (not expired)
+
+---
+
+## 4. WhatsApp templates — placeholders
+
+Editable in **Profile → WhatsApp Templates**. Empty placeholders are dropped
+automatically before sending.
+
+| Placeholder | Meaning |
+|---|---|
+| `{name}` | Student name |
+| `{id}` | ID number (JD-001) |
+| `{plan}` | Plan name |
+| `{course}` | Primary course line (Course · Batch · Timing) |
+| `{validTill}` | Paid till date |
+| `{amount}` | Amount (fee-collected message) |
+| `{due}` | Due amount (reminder) |
+| `{month}` | Current month label |
+| `{studio}` | Studio name |
+| `{address}` | Studio address |
+
+---
+
+## 5. Logo & icon replacement
+
+- **App logo / ID card / invoice logo:** replace `assets/images/logo.png`
+  (square PNG, transparent or dark background works well).
+- **Student photo placeholder:** `assets/images/placeholder.png`.
+- **Launcher icon:** the mipmap PNGs in `android/app/src/main/res/mipmap-*/`
+  were generated by `tools/gen_icons.ps1` — regenerate after swapping the logo:
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File tools\gen_icons.ps1
+  ```
+- The app name and icon stay **Studio Crow** regardless of the studio branding
+  the owner sets inside Profile.
+
+---
+
+## 6. Key behaviors
+
+- **Splash (≤ 1s) → device lock → Home.** App re-locks when sent to background.
+- **Add Member:** center `＋` → Camera / Gallery / Photo Later → square crop →
+  details form (validation: 10-digit mobile, Aadhar 12 digits not starting 0/1,
+  DOB not future, name required) → Welcome Kit (Welcome message / ID card / Invoice).
+- **Slide to mark present** on every card writes an immutable attendance row.
+- **Delete** asks to type the full name, cascades the ledger, deletes the photo,
+  offers 6s **Undo** (re-inserts + replays ledger).
+- **Collections** counts admission fee, membership and PT payments separately.
+- **Backup:** every change is debounced 15s; no internet → pending + auto-retry;
+  quota full → red banner; killed mid-backup → temp file cleaned on next run;
+  Restore previews meta and keeps a **snapshot for Undo**.
+- Theme (dark/light) persists and applies to every screen including the splash.
+
+---
+
+## 7. File map (highlights)
+
+```
+lib/
+├── main.dart / app.dart          # entry + theme + lock gate + lifecycle
+├── constants.dart                # colors, statuses, ledger types, templates
+├── theme/app_theme.dart          # dark/light Instagram-like theme + transitions
+├── models/models.dart            # students, courses, batches, timings, plans,
+│                                 # studentCourses, attendance, ledger, settings
+├── database/db_helper.dart       # SQLite schema (v1)
+├── services/
+│   ├── fee_engine.dart           # pure-Dart ledger engine (+ tests in test/)
+│   ├── backup_service.dart       # Drive appDataFolder REST (safe replace)
+│   ├── backup_worker.dart        # workmanager daily 4AM task
+│   ├── photo_service.dart        # pick/compress (640px JPEG) + offscreen render
+│   ├── whatsapp_service.dart     # wa.me + direct WA share intent
+│   ├── share_flow.dart           # ID card JPG → WhatsApp of that student
+│   ├── template_service.dart     # {placeholder} filling
+│   └── settings_service.dart     # typed key-value settings
+├── state/app_state.dart          # caches, statuses, mutations, debounced backup
+├── widgets/                      # member card, slide slider, ID card, invoice
+└── screens/                      # splash, lock, shell(5 tabs), home, add, detail,
+                                  # pt, attendance, collections, profile, payment
+```
+
+Native helpers (`android/.../MainActivity.kt`): JPEG compression/encoding,
+Wi-Fi check, direct WhatsApp share (EXTRA_PHONE_NUMBER + EXTRA_STREAM).
