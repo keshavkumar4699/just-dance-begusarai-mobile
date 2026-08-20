@@ -50,6 +50,7 @@ class _PaymentDialogState extends State<PaymentDialog> {
   late DateTime _date;
   int? _planId;
   bool _userEditedAmount = false;
+  bool _saving = false;
 
   AppStore get store => widget.store;
   Student get s => store.students.firstWhere((e) => e.id == widget.studentId);
@@ -137,24 +138,30 @@ class _PaymentDialogState extends State<PaymentDialog> {
       isPercent: _discountPercent, due: _grossPayable);
 
   Future<void> _save() async {
+    if (_saving) return;
     if (_amountError != null || _discountError != null) {
       setState(() {}); // surface inline errors
       return;
     }
-    final paid = double.tryParse(_amount.text.trim()) ?? 0;
-    await store.addPayment(
-      s: s,
-      amount: paid,
-      discount: _discountValue,
-      mode: _mode,
-      note: _note.text.trim(),
-      date: _date,
-    );
-    if (widget.renew && _planId != null && _planId != s.planId) {
-      await store.changePlan(s, _planId!);
+    setState(() => _saving = true);
+    try {
+      final paid = double.tryParse(_amount.text.trim()) ?? 0;
+      await store.addPayment(
+        s: s,
+        amount: paid,
+        discount: _discountValue,
+        mode: _mode,
+        note: _note.text.trim(),
+        date: _date,
+      );
+      if (widget.renew && _planId != null && _planId != s.planId) {
+        await store.changePlan(s, _planId!);
+      }
+      if (!mounted) return;
+      Navigator.pop(context, paid);
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
-    if (!mounted) return;
-    Navigator.pop(context, paid);
   }
 
   @override
@@ -325,7 +332,7 @@ class _PaymentDialogState extends State<PaymentDialog> {
             GoldButton(
               widget.renew ? 'Save Renewal' : 'Save Payment',
               icon: Icons.check,
-              onTap: _save,
+              onTap: _saving ? null : _save,
             ),
           ],
         ),

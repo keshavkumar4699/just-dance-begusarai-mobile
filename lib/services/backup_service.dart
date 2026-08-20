@@ -113,19 +113,25 @@ class BackupService {
     }
   }
 
-  Future<GoogleSignInAccount?> _account() async {
-    if (_google.currentUser != null) return _google.currentUser;
+  Future<GoogleSignInAccount?> _account({bool refresh = false}) async {
+    if (!refresh && _google.currentUser != null) return _google.currentUser;
     try {
-      return await _google.signInSilently().timeout(_signInTimeout);
+      final acc = await _google.signInSilently(suppressErrors: true).timeout(_signInTimeout);
+      return acc ?? _google.currentUser;
     } on TimeoutException {
-      return null;
+      return _google.currentUser;
+    } catch (_) {
+      return _google.currentUser;
     }
   }
 
-  Future<String?> _token() async {
+  Future<String?> _token({bool refresh = false}) async {
     try {
-      final acc = await _account();
+      final acc = await _account(refresh: refresh);
       if (acc == null) return null;
+      if (refresh) {
+        await acc.clearAuthCache();
+      }
       final auth = await acc.authentication.timeout(_tokenTimeout);
       return auth.accessToken;
     } catch (_) {
@@ -206,12 +212,21 @@ class BackupService {
         return const BackupResult(false, 'wifi');
       }
 
-      final token = await _token();
+      var token = await _token();
+      token ??= await _token(refresh: true);
       if (token == null) {
+        final currentMeta = store?.backupMeta ??
+            jsonDecode((await Repos.instance.getSetting(kPrefBackupMeta)) ?? '{}')
+                as Map<String, Object?>;
+        if (currentMeta['email'] != null) {
+          // User was signed in; this is a transient network/refresh issue, not sign out
+          await _pending('nointernet');
+          return const BackupResult(false, 'nointernet');
+        }
         await _pending('reconnect');
         return const BackupResult(false, 'reconnect');
       }
-      final headers = {'Authorization': 'Bearer $token'};
+      var headers = {'Authorization': 'Bearer $token'};
 
       // Build payload
       final Map<String, Object?> payload;
@@ -222,13 +237,37 @@ class BackupService {
       }
       final body = utf8.encode(jsonEncode(payload));
 
-      // Clean temp leftovers from any killed mid-backup run.
-      await _cleanupTemps(headers);
+      // Clean temp leftovers from any killed mid-backup run with 401 retry
+      try {
+        await _cleanupTemps(headers);
+      } on StateError catch (e) {
+        if (e.message == 'reconnect') {
+          // Token expired, refresh and retry
+          final freshToken = await _token(refresh: true);
+          if (freshToken != null) {
+            token = freshToken;
+            headers = {'Authorization': 'Bearer $token'};
+            await _cleanupTemps(headers);
+          } else {
+            rethrow;
+          }
+        } else {
+          rethrow;
+        }
+      }
 
       // SAFE REPLACE: upload temp -> verify -> delete old -> rename temp.
       final tmpName = 'studio_crow_backup.tmp';
-      final tmpId = await _createFile(headers, tmpName, body);
-      if (tmpId == null) return const BackupResult(false, 'error');
+      var tmpId = await _createFile(headers, tmpName, body);
+      if (tmpId == null) {
+        // Retry once with refreshed token
+        final freshToken = await _token(refresh: true);
+        if (freshToken != null) {
+          headers = {'Authorization': 'Bearer $freshToken'};
+          tmpId = await _createFile(headers, tmpName, body);
+        }
+        if (tmpId == null) return const BackupResult(false, 'error');
+      }
 
       final meta = await _fileMeta(headers, tmpId);
       if (meta == null || meta.size != body.length) {
@@ -450,11 +489,20 @@ class BackupService {
 
   /// Returns the backup payload (meta + data) or null when none exists.
   Future<Map<String, Object?>?> fetchBackup() async {
-    final token = await _token();
+    var token = await _token();
+    token ??= await _token(refresh: true);
     if (token == null) return null;
-    final headers = {'Authorization': 'Bearer $token'};
+    var headers = {'Authorization': 'Bearer $token'};
     try {
-      final id = await _findByName(headers, kBackupFileName);
+      var id = await _findByName(headers, kBackupFileName);
+      if (id == null) {
+        // Retry with refreshed token in case of expired token
+        final fresh = await _token(refresh: true);
+        if (fresh != null) {
+          headers = {'Authorization': 'Bearer $fresh'};
+          id = await _findByName(headers, kBackupFileName);
+        }
+      }
       if (id == null) return null;
       final r = await _timed(
           http.get(Uri.parse('$_api/$id?alt=media'), headers: headers));

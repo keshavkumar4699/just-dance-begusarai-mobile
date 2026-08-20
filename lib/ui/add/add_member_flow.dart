@@ -15,6 +15,7 @@ import '../../core/constants.dart';
 import '../../core/motion.dart';
 import '../../core/theme.dart';
 import '../../core/utils.dart';
+import '../../data/fee_engine.dart';
 import '../../data/models.dart';
 import '../../data/store.dart';
 import '../../services/card_images.dart';
@@ -1120,10 +1121,56 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
   }
 
   Widget _feesSection(AppColors c) {
+    final cycles = FeeEngine.cyclesStarted(_admissionDate, DateTime.now());
+    final isBackDated = dateOnly(_admissionDate).isBefore(dateOnly(DateTime.now()));
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SectionLabel('Fee Options'),
+        const SectionLabel('Admission & Fee Options'),
+        const FieldLabel('Date of Admission'),
+        DateField(
+          value: _admissionDate,
+          hint: 'Pick date',
+          firstDate: DateTime(2020),
+          lastDate: DateTime.now().add(const Duration(days: 365)),
+          onPicked: (d) => setState(() => _admissionDate = d),
+        ),
+        if (isBackDated && !_ptMode && _cyclePrice > 0)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: c.nearExpiry.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: c.nearExpiry.withValues(alpha: 0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Back-dated Admission: $cycles billing ${cycles == 1 ? 'cycle' : 'cycles'} elapsed',
+                    style: TextStyle(
+                      color: c.nearExpiry,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Admission Date: ${fmtDate(_admissionDate, forceYear: true)} · Total cycle fees till today: ${fmtMoney(cycles * _cyclePrice)}',
+                    style: TextStyle(
+                      color: c.textMuted,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        const SizedBox(height: 10),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           activeThumbColor: c.gold,
@@ -1228,40 +1275,33 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
                 Expanded(
                   child: TextFormField(
                     scrollPadding: const EdgeInsets.only(bottom: 200),
-                  controller: _discount,
-                  validator: (v) => validateDiscount(v,
-                      isPercent: _discountPercent, due: _planGross),
-                  keyboardType: TextInputType.number,
-                  onChanged: (_) => setState(() {}),
-                  decoration: InputDecoration(
-                      hintText: '0',
-                      prefixText: _discountPercent ? '' : '₹ '),
+                    controller: _discount,
+                    validator: (v) => validateDiscount(v,
+                        isPercent: _discountPercent, due: _planGross),
+                    keyboardType: TextInputType.number,
+                    onChanged: (_) => setState(() {}),
+                    decoration: InputDecoration(
+                        hintText: '0',
+                        prefixText: _discountPercent ? '' : '₹ '),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 10),
-              ToggleButtons(
-                borderRadius: BorderRadius.circular(10),
-                constraints:
-                    const BoxConstraints(minWidth: 52, minHeight: 44),
-                isSelected: [!_discountPercent, _discountPercent],
-                onPressed: (i) =>
-                    setState(() => _discountPercent = i == 1),
-                children: const [
-                  Text('₹', style: TextStyle(fontWeight: FontWeight.w700)),
-                  Text('%', style: TextStyle(fontWeight: FontWeight.w700)),
-                ],
-              ),
-            ],
-          ),
+                const SizedBox(width: 10),
+                ToggleButtons(
+                  borderRadius: BorderRadius.circular(10),
+                  constraints:
+                      const BoxConstraints(minWidth: 52, minHeight: 44),
+                  isSelected: [!_discountPercent, _discountPercent],
+                  onPressed: (i) =>
+                      setState(() => _discountPercent = i == 1),
+                  children: const [
+                    Text('₹', style: TextStyle(fontWeight: FontWeight.w700)),
+                    Text('%', style: TextStyle(fontWeight: FontWeight.w700)),
+                  ],
+                ),
+              ],
+            ),
+          ],
         ],
-        ],
-        const FieldLabel('Date of Admission'),
-        DateField(
-          value: _admissionDate,
-          hint: 'Pick date',
-          lastDate: DateTime.now().add(const Duration(days: 365)),
-          onPicked: (d) => setState(() => _admissionDate = d),
-        ),
       ],
     );
   }

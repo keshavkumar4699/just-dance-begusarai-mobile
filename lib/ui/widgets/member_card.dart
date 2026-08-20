@@ -18,6 +18,7 @@ import '../../data/fee_engine.dart';
 import '../../data/models.dart';
 import '../../data/store.dart';
 import '../../services/card_images.dart';
+import '../../services/invoice_pdf.dart';
 import '../../services/share_service.dart';
 import '../../services/whatsapp_service.dart';
 import '../student/payment_dialog.dart';
@@ -45,6 +46,7 @@ class _MemberCardState extends State<MemberCard>
   /// Revolving ring controller — plays 2 revolutions for new admissions.
   late final AnimationController _ring;
   bool _busyShare = false;
+  bool _busyReceipt = false;
 
   /// Bright revolving-ring colors (gold, cyan, magenta, green).
   static const _ringColors = [
@@ -153,6 +155,80 @@ class _MemberCardState extends State<MemberCard>
     }
   }
 
+  Future<void> _shareReceipt() async {
+    if (_busyReceipt) return;
+    setState(() => _busyReceipt = true);
+    try {
+      final last = store.lastPaymentOf(s.id);
+      final st = store.statusOf(s);
+      final File file;
+      if (s.ptEnabled) {
+        final paid = store
+            .ledgerOf(s.id)
+            .where((e) => e.type == kLedgerPtPayment)
+            .fold(0.0, (a, e) => a + e.paidAmount);
+        final discount = store
+            .ledgerOf(s.id)
+            .where((e) => e.type == kLedgerPtPayment)
+            .fold(0.0, (a, e) => a + e.discount);
+        file = await InvoicePdf.instance.generatePtInvoice(
+          store: store,
+          s: s,
+          date: last?.date ?? DateTime.now(),
+          sessionsAllocated: InvoiceMath.sessionsAllocated(
+              paid, s.ptSessionPrice),
+          sessionPrice: s.ptSessionPrice,
+          discount: discount,
+          paid: last?.paidAmount ?? paid,
+          balance: store.ptRechargeNeed(s),
+        );
+      } else {
+        final plan = store.planById(s.planId);
+        final entries = store.ledgerOf(s.id);
+        final paidTotal = entries
+            .where((e) =>
+                e.type == kLedgerPayment || e.type == kLedgerAdmissionFee)
+            .fold(0.0, (a, e) => a + e.paidAmount);
+        final discount = entries.fold(0.0, (a, e) => a + e.discount);
+        final months = plan?.months ?? 1;
+        final planPrice = st.cyclePrice * months;
+        file = await InvoicePdf.instance.generateCourseInvoice(
+          store: store,
+          s: s,
+          date: last?.date ?? DateTime.now(),
+          courseLine: store.primaryCourseLine(s),
+          planName: plan?.name ?? '',
+          monthsAllocated: months,
+          validTill: st.paidTill,
+          admissionFee: s.admissionFeeEnabled && s.admissionFeePaid
+              ? store.admissionFeeAmount
+              : 0,
+          planPrice: planPrice,
+          discount: last?.discount ?? discount,
+          paid: last != null ? last.paidAmount : paidTotal,
+          balance: st.due,
+        );
+      }
+      final text = '${s.name}, here is your payment receipt (PDF). – ${store.studio.name}';
+      var ok = await ShareService.instance.documentToWhatsApp(
+          mobile: s.mobile, path: file.path, text: text);
+      if (!ok) {
+        await ShareService.instance.shareImage(file.path, text: text);
+        ok = true;
+      }
+      if (!ok && mounted) {
+        showSnack(context, 'No WhatsApp on this number', duration: kSnackWarn);
+      }
+    } catch (_) {
+      if (mounted) {
+        showSnack(context, 'Could not create the invoice PDF',
+            duration: kSnackError);
+      }
+    } finally {
+      if (mounted) setState(() => _busyReceipt = false);
+    }
+  }
+
   Future<void> _call() async {
     final ok = await WhatsAppService.instance.call(s.mobile);
     if (!ok && mounted) showSnack(context, 'Could not open the dialer', duration: kSnackError);
@@ -170,6 +246,17 @@ class _MemberCardState extends State<MemberCard>
 
   Future<void> _renew() async {
     await showPaymentDialog(context, store, s, renew: true);
+  }
+
+  Future<void> _togglePresent() async {
+    final present = store.isPresentToday(s);
+    if (present) {
+      await store.unmarkPresent(s);
+      if (mounted) showSnack(context, '${s.name} attendance removed', duration: kSnackInfo);
+    } else {
+      await store.markPresent(s);
+      if (mounted) showSnack(context, '${s.name} marked present', duration: kSnackSuccess);
+    }
   }
 
   Future<void> _toggleBlock() async {
@@ -441,16 +528,17 @@ class _MemberCardState extends State<MemberCard>
       );
 
   Widget _actionRow(AppColors c) {
+    final present = store.isPresentToday(s);
     Widget action(Widget iconWidget, VoidCallback onTap,
         {bool loading = false}) {
       return Pressable(
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.all(13),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
           child: loading
               ? SizedBox(
-                  width: 24,
-                  height: 24,
+                  width: 22,
+                  height: 22,
                   child: CircularProgressIndicator(
                       strokeWidth: 2, color: c.gold))
               : iconWidget,
@@ -459,32 +547,53 @@ class _MemberCardState extends State<MemberCard>
     }
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(10, 2, 10, 6),
-      child: Row(
-        children: [
-          action(
-              Icon(Icons.call_outlined, size: 24, color: c.textMuted),
-              _call),
-          action(
-              WhatsAppIcon(size: 22, color: c.textMuted),
-              _chat),
-          action(
-              Icon(Icons.autorenew_outlined, size: 24, color: c.textMuted),
-              _renew),
-          action(
-              Icon(Icons.ios_share_outlined, size: 24, color: c.textMuted),
-              _shareIdCard,
-              loading: _busyShare),
-          const Spacer(),
-          action(
-              Icon(
-                  s.isBlocked
-                      ? Icons.lock_open_outlined
-                      : Icons.block_outlined,
-                  size: 24,
-                  color: c.textMuted),
-              _toggleBlock),
-        ],
+      padding: const EdgeInsets.fromLTRB(6, 2, 6, 6),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            // 1. Renew
+            action(
+                Icon(Icons.autorenew_outlined, size: 23, color: c.gold),
+                _renew),
+            // 2. Share Receipt
+            action(
+                Icon(Icons.receipt_long_outlined, size: 23, color: c.textMuted),
+                _shareReceipt,
+                loading: _busyReceipt),
+            // 3. Share ID
+            action(
+                Icon(Icons.badge_outlined, size: 23, color: c.textMuted),
+                _shareIdCard,
+                loading: _busyShare),
+            // 4. WhatsApp
+            action(
+                WhatsAppIcon(size: 21, color: c.textMuted),
+                _chat),
+            // 5. Call
+            action(
+                Icon(Icons.call_outlined, size: 23, color: c.textMuted),
+                _call),
+            // 6. Present
+            action(
+                Icon(
+                    present
+                        ? Icons.check_circle
+                        : Icons.check_circle_outline,
+                    size: 23,
+                    color: present ? c.active : c.textMuted),
+                _togglePresent),
+            // 7. Other buttons (Block / Unblock)
+            action(
+                Icon(
+                    s.isBlocked
+                        ? Icons.lock_open_outlined
+                        : Icons.block_outlined,
+                    size: 23,
+                    color: s.isBlocked ? c.expired : c.textMuted),
+                _toggleBlock),
+          ],
+        ),
       ),
     );
   }

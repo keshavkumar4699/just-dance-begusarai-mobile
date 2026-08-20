@@ -180,6 +180,22 @@ class AppStore extends ChangeNotifier {
   List<LedgerEntry> ledgerOf(int studentId) =>
       ledger.where((e) => e.studentId == studentId).toList();
 
+  /// Returns the most recent payment / receipt ledger entry for [studentId].
+  LedgerEntry? lastPaymentOf(int studentId) {
+    final list = ledger
+        .where((e) =>
+            e.studentId == studentId &&
+            (e.type == kLedgerPayment ||
+                e.type == kLedgerAdmissionFee ||
+                e.type == kLedgerPtPayment))
+        .toList()
+      ..sort((a, b) {
+        final c = b.date.compareTo(a.date);
+        return c != 0 ? c : b.id.compareTo(a.id);
+      });
+    return list.isEmpty ? null : list.first;
+  }
+
   List<AttendanceRow> attendanceOf(int studentId) =>
       attendance.where((e) => e.studentId == studentId).toList();
 
@@ -412,7 +428,7 @@ class AppStore extends ChangeNotifier {
         ? (admissionFeeAmount - state.admissionFeePaidAmount)
             .clamp(0.0, double.infinity)
         : 0.0;
-    final dueBefore = statusOf(s).due;
+    final dueBefore = statusOf(s, today: now).due;
 
     final split = FeeEngine.applyPayment(
       state: state,

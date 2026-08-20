@@ -2,6 +2,8 @@
 /// info, realtime ledger table, dues + attendance summary, all actions.
 library;
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../../core/constants.dart';
@@ -10,6 +12,7 @@ import '../../core/utils.dart';
 import '../../data/models.dart';
 import '../../data/store.dart';
 import '../../services/card_images.dart';
+import '../../services/invoice_pdf.dart';
 import '../../services/share_service.dart';
 import '../../services/whatsapp_service.dart';
 import '../add/add_member_flow.dart';
@@ -76,41 +79,31 @@ class StudentDetailScreen extends StatelessWidget {
     final present = store.isPresentToday(s);
     return Column(
       children: [
+        // Row 1: Renew > Share Receipt > Share ID
         Row(
           children: [
             Expanded(
-              child: GoldButton('Payment',
-                  icon: Icons.currency_rupee,
-                  onTap: () => showPaymentDialog(context, store, s)),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: GhostButton('Renew',
+              child: GoldButton('Renew',
                   icon: Icons.autorenew_outlined,
                   onTap: () =>
                       showPaymentDialog(context, store, s, renew: true)),
             ),
             const SizedBox(width: 10),
             Expanded(
-              child: GhostButton(
-                present ? 'Present ✔' : 'Present',
-                icon: present
-                    ? Icons.check_circle
-                    : Icons.check_circle_outline,
-                color: present ? AppColors.of(context).active : null,
-                onTap: present
-                    ? null
-                    : () async {
-                        await store.markPresent(s);
-                        if (context.mounted) {
-                          showSnack(context, '${s.name} marked present', duration: kSnackSuccess);
-                        }
-                      },
-              ),
+              child: GhostButton('Receipt',
+                  icon: Icons.receipt_long_outlined,
+                  onTap: () => _shareReceipt(context, store, s)),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: GhostButton('Share ID',
+                  icon: Icons.badge_outlined,
+                  onTap: () => _shareId(context, store, s)),
             ),
           ],
         ),
         const SizedBox(height: 10),
+        // Row 2: WhatsApp > Call > Present
         Row(
           children: [
             Expanded(
@@ -133,12 +126,6 @@ class StudentDetailScreen extends StatelessWidget {
             ),
             const SizedBox(width: 10),
             Expanded(
-              child: GhostButton('Share ID',
-                  icon: Icons.ios_share_outlined,
-                  onTap: () => _shareId(context, store, s)),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
               child: GhostButton('Call',
                   icon: Icons.call_outlined, onTap: () async {
                 final ok = await WhatsAppService.instance.call(s.mobile);
@@ -147,14 +134,38 @@ class StudentDetailScreen extends StatelessWidget {
                 }
               }),
             ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: GhostButton(
+                present ? 'Present ✔' : 'Present',
+                icon: present
+                    ? Icons.check_circle
+                    : Icons.check_circle_outline,
+                color: present ? AppColors.of(context).active : null,
+                onTap: () async {
+                  if (present) {
+                    await store.unmarkPresent(s);
+                    if (context.mounted) {
+                      showSnack(context, '${s.name} attendance removed', duration: kSnackInfo);
+                    }
+                  } else {
+                    await store.markPresent(s);
+                    if (context.mounted) {
+                      showSnack(context, '${s.name} marked present', duration: kSnackSuccess);
+                    }
+                  }
+                },
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 10),
+        // Row 3: Switch PT/Course > Block > Delete
         Row(
           children: [
             Expanded(
               child: GhostButton(
-                s.ptEnabled ? 'Switch to Course' : 'Add to Personal Training',
+                s.ptEnabled ? 'Switch to Course' : 'Add to PT',
                 icon: Icons.fitness_center_outlined,
                 onTap: () {
                   if (s.ptEnabled) {
@@ -165,11 +176,7 @@ class StudentDetailScreen extends StatelessWidget {
                 },
               ),
             ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        Row(
-          children: [
+            const SizedBox(width: 10),
             Expanded(
               child: GhostButton(
                 s.isBlocked ? 'Unblock' : 'Block',
@@ -201,6 +208,76 @@ class StudentDetailScreen extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  Future<void> _shareReceipt(BuildContext context, AppStore store, Student s) async {
+    try {
+      final last = store.lastPaymentOf(s.id);
+      final st = store.statusOf(s);
+      final File file;
+      if (s.ptEnabled) {
+        final paid = store
+            .ledgerOf(s.id)
+            .where((e) => e.type == kLedgerPtPayment)
+            .fold(0.0, (a, e) => a + e.paidAmount);
+        final discount = store
+            .ledgerOf(s.id)
+            .where((e) => e.type == kLedgerPtPayment)
+            .fold(0.0, (a, e) => a + e.discount);
+        file = await InvoicePdf.instance.generatePtInvoice(
+          store: store,
+          s: s,
+          date: last?.date ?? DateTime.now(),
+          sessionsAllocated: InvoiceMath.sessionsAllocated(
+              paid, s.ptSessionPrice),
+          sessionPrice: s.ptSessionPrice,
+          discount: discount,
+          paid: last?.paidAmount ?? paid,
+          balance: store.ptRechargeNeed(s),
+        );
+      } else {
+        final plan = store.planById(s.planId);
+        final entries = store.ledgerOf(s.id);
+        final paidTotal = entries
+            .where((e) =>
+                e.type == kLedgerPayment || e.type == kLedgerAdmissionFee)
+            .fold(0.0, (a, e) => a + e.paidAmount);
+        final discount = entries.fold(0.0, (a, e) => a + e.discount);
+        final months = plan?.months ?? 1;
+        final planPrice = st.cyclePrice * months;
+        file = await InvoicePdf.instance.generateCourseInvoice(
+          store: store,
+          s: s,
+          date: last?.date ?? DateTime.now(),
+          courseLine: store.primaryCourseLine(s),
+          planName: plan?.name ?? '',
+          monthsAllocated: months,
+          validTill: st.paidTill,
+          admissionFee: s.admissionFeeEnabled && s.admissionFeePaid
+              ? store.admissionFeeAmount
+              : 0,
+          planPrice: planPrice,
+          discount: last?.discount ?? discount,
+          paid: last != null ? last.paidAmount : paidTotal,
+          balance: st.due,
+        );
+      }
+      final text = '${s.name}, here is your payment receipt (PDF). – ${store.studio.name}';
+      var ok = await ShareService.instance.documentToWhatsApp(
+          mobile: s.mobile, path: file.path, text: text);
+      if (!ok) {
+        await ShareService.instance.shareImage(file.path, text: text);
+        ok = true;
+      }
+      if (!ok && context.mounted) {
+        showSnack(context, 'No WhatsApp on this number', duration: kSnackWarn);
+      }
+    } catch (_) {
+      if (context.mounted) {
+        showSnack(context, 'Could not create the invoice PDF',
+            duration: kSnackError);
+      }
+    }
   }
 
   Future<void> _shareId(BuildContext context, AppStore store, Student s) async {
