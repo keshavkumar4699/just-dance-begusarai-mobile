@@ -41,6 +41,7 @@ const kLedgerPayment = 'PAYMENT';
 const kLedgerAdmissionFee = 'ADMISSION_FEE_PAID';
 const kLedgerAutoCredit = 'AUTO_CREDIT_ADJUST';
 const kLedgerPtPayment = 'PT_PAYMENT';
+const kLedgerPlanTerm = 'PLAN_TERM';
 const kLedgerPlanChange = 'PLAN_CHANGE';
 const kLedgerNote = 'NOTE';
 
@@ -55,8 +56,6 @@ const kPrefBackupMeta = 'backupMeta'; // JSON
 const kPrefDailyBackup = 'dailyBackupOn';
 const kPrefWifiOnly = 'wifiOnlyBackup';
 const kPrefAdmissionFee = 'admissionFeeAmount';
-const kPrefGstin = 'gstin';
-const kPrefGstRate = 'gstRate'; // percent, '0' = off
 const kPrefPtSessionPrice = 'ptSessionPrice'; // studio default ₹/session
 const kPrefPtDuration = 'ptDuration'; // e.g. "1 hour"
 const kPrefPtDays = 'ptDays'; // e.g. "Mon,Wed,Fri"
@@ -69,3 +68,17 @@ const kBackupFileName = 'studio_crow_backup.json';
 
 /// India country code used for wa.me links (numbers stored as 10 digits).
 const kCountryCode = '91';
+
+/// Fixed Batch Types
+const kBatchWeekend = 1;
+const kBatchWeekdays = 2;
+
+const kBatchWeekendLabel = 'Weekend';
+const kBatchWeekendDays = 'Sat–Sun';
+const kBatchWeekendDuration = '2 hours';
+const kBatchWeekendFullLabel = 'Weekend · Sat–Sun · 2 hours';
+
+const kBatchWeekdaysLabel = 'Weekdays';
+const kBatchWeekdaysDays = 'Mon–Fri';
+const kBatchWeekdaysDuration = '1 hour';
+const kBatchWeekdaysFullLabel = 'Weekdays · Mon–Fri · 1 hour';

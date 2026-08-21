@@ -73,42 +73,64 @@ class StudentDetailScreen extends StatelessWidget {
         );
       },
     );
-  }
-
-  Widget _actions(BuildContext context, AppStore store, Student s) {
+  }  Widget _actions(BuildContext context, AppStore store, Student s) {
     final present = store.isPresentToday(s);
+    final c = AppColors.of(context);
     return Column(
       children: [
-        // Row 1: Renew > Share Receipt > Share ID
+        // Row 1: Add Payment (first button) > Renew > Receipt
         Row(
           children: [
             Expanded(
-              child: GoldButton('Renew',
-                  icon: Icons.autorenew_outlined,
-                  onTap: () =>
-                      showPaymentDialog(context, store, s, renew: true)),
+              child: GoldButton(
+                'Add Payment',
+                icon: Icons.payments_outlined,
+                onTap: () {
+                  final st = store.statusOf(s);
+                  if (!st.hasDue) {
+                    showSnack(
+                      context,
+                      'All dues are cleared. Renew plan for next cycle.',
+                      duration: kSnackInfo,
+                    );
+                    return;
+                  }
+                  showPaymentDialog(context, store, s, renew: false);
+                },
+              ),
             ),
             const SizedBox(width: 10),
             Expanded(
-              child: GhostButton('Receipt',
-                  icon: Icons.receipt_long_outlined,
-                  onTap: () => _shareReceipt(context, store, s)),
+              child: GhostButton(
+                'Renew',
+                icon: Icons.autorenew_outlined,
+                onTap: () =>
+                    showPaymentDialog(context, store, s, renew: true),
+              ),
             ),
             const SizedBox(width: 10),
+            Expanded(
+              child: GhostButton(
+                'Receipt',
+                icon: Icons.receipt_long_outlined,
+                onTap: () => _shareReceipt(context, store, s),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        // Row 2: Share ID > WhatsApp > Call
+        Row(
+          children: [
             Expanded(
               child: GhostButton('Share ID',
                   icon: Icons.badge_outlined,
                   onTap: () => _shareId(context, store, s)),
             ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        // Row 2: WhatsApp > Call > Present
-        Row(
-          children: [
+            const SizedBox(width: 10),
             Expanded(
               child: GhostButton('WhatsApp',
-                  leading: WhatsAppIcon(size: 17, color: AppColors.of(context).text),
+                  leading: WhatsAppIcon(size: 17, color: c.text),
                   onTap: () async {
                 final st = store.statusOf(s);
                 final key =
@@ -134,14 +156,19 @@ class StudentDetailScreen extends StatelessWidget {
                 }
               }),
             ),
-            const SizedBox(width: 10),
+          ],
+        ),
+        const SizedBox(height: 10),
+        // Row 3: Present > Switch PT/Course > Block
+        Row(
+          children: [
             Expanded(
               child: GhostButton(
                 present ? 'Present ✔' : 'Present',
                 icon: present
                     ? Icons.check_circle
                     : Icons.check_circle_outline,
-                color: present ? AppColors.of(context).active : null,
+                color: present ? c.active : null,
                 onTap: () async {
                   if (present) {
                     await store.unmarkPresent(s);
@@ -157,15 +184,10 @@ class StudentDetailScreen extends StatelessWidget {
                 },
               ),
             ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        // Row 3: Switch PT/Course > Block > Delete
-        Row(
-          children: [
+            const SizedBox(width: 10),
             Expanded(
               child: GhostButton(
-                s.ptEnabled ? 'Switch to Course' : 'Add to PT',
+                s.ptEnabled ? 'To Course' : 'To PT',
                 icon: Icons.fitness_center_outlined,
                 onTap: () {
                   if (s.ptEnabled) {
@@ -196,15 +218,18 @@ class StudentDetailScreen extends StatelessWidget {
                 },
               ),
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: GhostButton('Delete',
-                  icon: Icons.delete_outline,
-                  color: AppColors.of(context).expired,
-                  onTap: () =>
-                      confirmAndDeleteStudent(context, store, s)),
-            ),
           ],
+        ),
+        const SizedBox(height: 10),
+        // Row 4: Delete
+        SizedBox(
+          width: double.infinity,
+          child: GhostButton(
+            'Delete Member',
+            icon: Icons.delete_outline,
+            color: c.expired,
+            onTap: () => confirmAndDeleteStudent(context, store, s),
+          ),
         ),
       ],
     );
@@ -212,53 +237,44 @@ class StudentDetailScreen extends StatelessWidget {
 
   Future<void> _shareReceipt(BuildContext context, AppStore store, Student s) async {
     try {
-      final last = store.lastPaymentOf(s.id);
       final st = store.statusOf(s);
+      final txn = store.lastPaymentTransactionOf(s.id);
+      final txnDate = txn.isNotEmpty ? txn.first.date : DateTime.now();
+      final paidTotal = txn.fold(0.0, (a, e) => a + e.paidAmount);
+      final discount = txn.fold(0.0, (a, e) => a + e.discount);
       final File file;
       if (s.ptEnabled) {
-        final paid = store
-            .ledgerOf(s.id)
-            .where((e) => e.type == kLedgerPtPayment)
-            .fold(0.0, (a, e) => a + e.paidAmount);
-        final discount = store
-            .ledgerOf(s.id)
-            .where((e) => e.type == kLedgerPtPayment)
-            .fold(0.0, (a, e) => a + e.discount);
         file = await InvoicePdf.instance.generatePtInvoice(
           store: store,
           s: s,
-          date: last?.date ?? DateTime.now(),
+          date: txnDate,
           sessionsAllocated: InvoiceMath.sessionsAllocated(
-              paid, s.ptSessionPrice),
+              paidTotal, s.ptSessionPrice),
           sessionPrice: s.ptSessionPrice,
           discount: discount,
-          paid: last?.paidAmount ?? paid,
+          paid: paidTotal,
           balance: store.ptRechargeNeed(s),
         );
       } else {
         final plan = store.planById(s.planId);
-        final entries = store.ledgerOf(s.id);
-        final paidTotal = entries
-            .where((e) =>
-                e.type == kLedgerPayment || e.type == kLedgerAdmissionFee)
+        final admissionFee = txn
+            .where((e) => e.type == kLedgerAdmissionFee)
             .fold(0.0, (a, e) => a + e.paidAmount);
-        final discount = entries.fold(0.0, (a, e) => a + e.discount);
         final months = plan?.months ?? 1;
-        final planPrice = st.cyclePrice * months;
+        final coursePaid = (paidTotal - admissionFee).clamp(0.0, double.infinity);
+        final courseGross = coursePaid + discount;
         file = await InvoicePdf.instance.generateCourseInvoice(
           store: store,
           s: s,
-          date: last?.date ?? DateTime.now(),
+          date: txnDate,
           courseLine: store.primaryCourseLine(s),
           planName: plan?.name ?? '',
           monthsAllocated: months,
           validTill: st.paidTill,
-          admissionFee: s.admissionFeeEnabled && s.admissionFeePaid
-              ? store.admissionFeeAmount
-              : 0,
-          planPrice: planPrice,
-          discount: last?.discount ?? discount,
-          paid: last != null ? last.paidAmount : paidTotal,
+          admissionFee: admissionFee,
+          planPrice: courseGross,
+          discount: discount,
+          paid: paidTotal,
           balance: st.due,
         );
       }
@@ -412,8 +428,7 @@ class StudentDetailScreen extends StatelessWidget {
               sc.isPrimary ? 'Primary' : 'Course',
               [
                 store.courseById(sc.courseId)?.name ?? '—',
-                store.batchById(sc.batchId)?.name ?? '',
-                store.timingById(sc.timingId)?.label ?? '',
+                AppStore.batchTypeLabel(sc.batchId),
               ].where((e) => e.isNotEmpty).join(' · '),
             ),
           row('Plan', store.planById(s.planId)?.name ?? '—'),
@@ -555,6 +570,7 @@ class StudentDetailScreen extends StatelessWidget {
       kLedgerAdmissionFee => 'Admission fee',
       kLedgerAutoCredit => 'Advance adjusted',
       kLedgerPtPayment => 'PT payment',
+      kLedgerPlanTerm => 'Plan started',
       kLedgerPlanChange => 'Plan change',
       _ => 'Note',
     };

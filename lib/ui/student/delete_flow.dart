@@ -79,7 +79,7 @@ Future<void> confirmAndDeleteStudent(
     ),
   );
   // After the snackbar window, delete the photo file for good.
-  Future.delayed(const Duration(milliseconds: 8500), () {
+  Future.delayed(const Duration(milliseconds: 7000), () {
     store.finalizeDelete(snap);
   });
 }

@@ -4,6 +4,8 @@
 /// confirmation sheet with WhatsApp reminder + PDF invoice.
 library;
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../../core/constants.dart';
@@ -53,7 +55,11 @@ class _PaymentDialogState extends State<PaymentDialog> {
   bool _saving = false;
 
   AppStore get store => widget.store;
-  Student get s => store.students.firstWhere((e) => e.id == widget.studentId);
+  Student? get _student => store.students.cast<Student?>().firstWhere(
+        (e) => e?.id == widget.studentId,
+        orElse: () => null,
+      );
+  Student get s => _student!;
 
   @override
   void initState() {
@@ -62,7 +68,8 @@ class _PaymentDialogState extends State<PaymentDialog> {
     _discount = TextEditingController();
     _note = TextEditingController();
     _date = DateTime.now();
-    _planId = s.planId ?? (store.plans.isEmpty ? null : store.plans.first.id);
+    _planId = _student?.planId ??
+        (store.plans.isEmpty ? null : store.plans.first.id);
     _applySuggestion();
   }
 
@@ -76,27 +83,33 @@ class _PaymentDialogState extends State<PaymentDialog> {
 
   int get _months => store.planById(_planId)?.months ?? 1;
   double get _price => store.cyclePriceOf(s.id);
+  Plan? get _plan => store.planById(_planId);
 
-  double get _discountValue {
+  double get _manualDiscountValue {
     final raw = double.tryParse(_discount.text.trim()) ?? 0;
     if (raw <= 0) return 0;
-    final gross = _grossPayable;
+    final gross = _months * _price;
     final d = _discountPercent ? gross * raw / 100 : raw;
     return d.clamp(0.0, gross);
   }
 
-  double get _grossPayable {
+  PlanFeeCalc get _planCalc => FeeEngine.calculatePlanFee(
+        monthlyFee: _price,
+        planMonths: _months,
+        discountType: _plan?.discountType ?? '',
+        discountValue: _plan?.discountValue ?? 0,
+        manualDiscount: _manualDiscountValue,
+      );
+
+  double get _suggested {
     final st = store.statusOf(s);
     if (widget.renew) {
-      // Admission (if pending) + n months - advance already in hand.
-      return (st.admissionDue + _months * _price - st.advance)
+      final netCourse = (_planCalc.grossFee - _planCalc.totalDiscount - st.advance)
           .clamp(0.0, double.infinity);
+      return (st.admissionDue + netCourse).clamp(0.0, double.infinity);
     }
-    return st.due; // settle whatever is due today
+    return (st.due - _manualDiscountValue).clamp(0.0, double.infinity);
   }
-
-  double get _suggested =>
-      (_grossPayable - _discountValue).clamp(0.0, double.infinity);
 
   void _applySuggestion() {
     if (_userEditedAmount) return;
@@ -106,25 +119,36 @@ class _PaymentDialogState extends State<PaymentDialog> {
         : v.toStringAsFixed(2);
   }
 
-  /// Simulated after-save preview.
+  /// Simulated after-save preview using FeeEngine flowchart logic.
   FeeStatus _preview() {
     final state = store.feeStateOf(s);
     final paid = double.tryParse(_amount.text.trim()) ?? 0;
-    final admissionRemaining = s.admissionFeeEnabled
-        ? (store.admissionFeeAmount - state.admissionFeePaidAmount)
+    final admAmount = s.admissionFeeAmount > 0 ? s.admissionFeeAmount : store.admissionFeeAmount;
+    final admissionRemaining = s.admissionFeeEnabled && !s.admissionFeePaid
+        ? (admAmount - state.admissionFeePaidAmount)
             .clamp(0.0, double.infinity)
         : 0.0;
+    if (widget.renew && _planId != null) {
+      state.termMonthsTotal += _months;
+      state.termGross += _months * _price;
+      state.termDiscountTotal += _planCalc.multipleMonthsDiscount;
+    }
     FeeEngine.applyPayment(
       state: state,
       amount: paid,
       cyclePrice: _price,
       admissionFeeRemaining: admissionRemaining,
-      discount: _discountValue,
+      isAdmissionFeeLevied: s.admissionFeeEnabled,
+      isAdmissionFeePaid: s.admissionFeePaid,
+      planMonths: _months,
+      planDiscountType: _plan?.discountType ?? '',
+      planDiscountValue: _plan?.discountValue ?? 0,
+      manualDiscount: _manualDiscountValue,
     );
     return FeeEngine.status(
       state: state,
       cyclePrice: _price,
-      admissionFeeAmount: store.admissionFeeAmount,
+      admissionFeeAmount: admAmount,
       admissionFeeEnabled: s.admissionFeeEnabled,
       admissionDate: s.admissionDate,
       today: _date,
@@ -132,10 +156,10 @@ class _PaymentDialogState extends State<PaymentDialog> {
   }
 
   String? get _amountError =>
-      validateAmount(_amount.text, required: _discountValue <= 0);
+      validateAmount(_amount.text, required: _planCalc.totalDiscount <= 0);
 
   String? get _discountError => validateDiscount(_discount.text,
-      isPercent: _discountPercent, due: _grossPayable);
+      isPercent: _discountPercent, due: _planCalc.grossFee);
 
   Future<void> _save() async {
     if (_saving) return;
@@ -149,10 +173,12 @@ class _PaymentDialogState extends State<PaymentDialog> {
       await store.addPayment(
         s: s,
         amount: paid,
-        discount: _discountValue,
+        planId: _planId,
+        manualDiscount: _manualDiscountValue,
         mode: _mode,
         note: _note.text.trim(),
         date: _date,
+        isRenewal: widget.renew,
       );
       if (widget.renew && _planId != null && _planId != s.planId) {
         await store.changePlan(s, _planId!);
@@ -169,6 +195,36 @@ class _PaymentDialogState extends State<PaymentDialog> {
     final c = AppColors.of(context);
     final st = store.statusOf(s);
     final preview = _preview();
+    final planCalc = _planCalc;
+    final uncovered = (st.cyclesStarted - st.monthsCovered).clamp(0, 1 << 31);
+
+    final breakdownItems = <String>[];
+    if (st.admissionDue > 0) {
+      breakdownItems.add('Admission ${fmtMoney(st.admissionDue)}');
+    }
+    if (widget.renew) {
+      breakdownItems.add('$_months ${plural(_months)} ${fmtMoney(planCalc.grossFee)}');
+      if (planCalc.multipleMonthsDiscount > 0) {
+        breakdownItems.add('Plan Disc −${fmtMoney(planCalc.multipleMonthsDiscount)}');
+      }
+    } else {
+      if (st.feeDue > 0) {
+        breakdownItems.add('Course Due ${fmtMoney(st.feeDue)}');
+      }
+    }
+    if (planCalc.manualDiscount > 0) {
+      breakdownItems.add('Manual Disc −${fmtMoney(planCalc.manualDiscount)}');
+    }
+    if (st.advance > 0) {
+      breakdownItems.add('Advance −${fmtMoney(st.advance)}');
+    }
+    breakdownItems.add('= Due ${fmtMoney(_suggested)}');
+
+    final breakdownText = breakdownItems
+        .join('  +  ')
+        .replaceAll('+  Plan Disc −', '−  Plan Disc ')
+        .replaceAll('+  Manual Disc −', '−  Manual Disc ')
+        .replaceAll('+  Advance −', '−  Advance ');
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
@@ -186,11 +242,11 @@ class _PaymentDialogState extends State<PaymentDialog> {
                       borderRadius: BorderRadius.circular(2))),
             ),
             const SizedBox(height: 14),
-            Text(widget.renew ? 'Renew ${s.name}' : 'Payment — ${s.name}',
+            Text(widget.renew ? 'Renew — ${s.name}' : 'Payment — ${s.name}',
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.titleMedium),
 
-            // Live breakdown strip
+            // Live breakdown strip based on flowchart & overdue status
             const SizedBox(height: 12),
             Container(
               width: double.infinity,
@@ -201,7 +257,7 @@ class _PaymentDialogState extends State<PaymentDialog> {
                 border: Border.all(color: c.hairline),
               ),
               child: Text(
-                'Admission ${fmtMoney(st.admissionDue)}  +  $_months ${plural(_months)} ${fmtMoney(_months * _price)}  −  Advance ${fmtMoney(st.advance)}  −  Discount ${fmtMoney(_discountValue)}  =  Due ${fmtMoney(_suggested)}',
+                breakdownText,
                 style: TextStyle(
                     color: c.text, fontSize: 12.5, height: 1.5),
               ),
@@ -271,6 +327,51 @@ class _PaymentDialogState extends State<PaymentDialog> {
               decoration: InputDecoration(
                   hintText: '0', prefixText: '₹ ', errorText: _amountError),
             ),
+            if (st.feeDue > 0) ...[
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  ActionChip(
+                    label: Text('All Dues (${fmtMoney(st.due)})',
+                        style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600)),
+                    onPressed: () => setState(() {
+                      _userEditedAmount = true;
+                      final v = st.due;
+                      _amount.text = v == v.roundToDouble()
+                          ? v.toStringAsFixed(0)
+                          : v.toStringAsFixed(2);
+                    }),
+                  ),
+                  if (uncovered > 1)
+                    ActionChip(
+                      label: Text('1 Month (${fmtMoney(_price + st.admissionDue)})',
+                          style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600)),
+                      onPressed: () => setState(() {
+                        _userEditedAmount = true;
+                        final v = _price + st.admissionDue;
+                        _amount.text = v == v.roundToDouble()
+                            ? v.toStringAsFixed(0)
+                            : v.toStringAsFixed(2);
+                      }),
+                    ),
+                  if (_planCalc.totalCourseFees > 0)
+                    ActionChip(
+                      label: Text('${_months}mo Plan (${fmtMoney((st.admissionDue + _planCalc.totalCourseFees - st.advance).clamp(0.0, double.infinity))})',
+                          style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600)),
+                      onPressed: () => setState(() {
+                        _userEditedAmount = true;
+                        final v = (st.admissionDue + _planCalc.totalCourseFees - st.advance)
+                            .clamp(0.0, double.infinity);
+                        _amount.text = v == v.roundToDouble()
+                            ? v.toStringAsFixed(0)
+                            : v.toStringAsFixed(2);
+                      }),
+                    ),
+                ],
+              ),
+            ],
 
             const FieldLabel('Mode'),
             Row(
@@ -357,9 +458,15 @@ class _PaymentDoneSheetState extends State<PaymentDoneSheet> {
   bool _busy = false;
 
   AppStore get store => widget.store;
-  Student get s => store.students.firstWhere((e) => e.id == widget.studentId);
+  Student? get _student => store.students.cast<Student?>().firstWhere(
+        (e) => e?.id == widget.studentId,
+        orElse: () => null,
+      );
+  Student get s => _student!;
 
   Future<void> _sendReminder() async {
+    final s = _student;
+    if (s == null) return;
     final msg = WhatsAppService.instance.build(
       kTemplateFeeCollected,
       store,
@@ -375,30 +482,46 @@ class _PaymentDoneSheetState extends State<PaymentDoneSheet> {
     setState(() => _busy = true);
     final st = store.statusOf(s);
     final plan = store.planById(s.planId);
-    final entries = store.ledgerOf(s.id);
-    final paidTotal = entries
-        .where((e) =>
-            e.type == kLedgerPayment || e.type == kLedgerAdmissionFee)
-        .fold(0.0, (a, e) => a + e.paidAmount);
-    final discount = entries.fold(0.0, (a, e) => a + e.discount);
-    final months = plan?.months ?? 1;
-    final planPrice = st.cyclePrice * months;
+    final txn = store.lastPaymentTransactionOf(s.id);
+    final txnDate = txn.isNotEmpty ? txn.first.date : DateTime.now();
+    final paidTotal = txn.fold(0.0, (a, e) => a + e.paidAmount);
+    final discount = txn.fold(0.0, (a, e) => a + e.discount);
     try {
-      final file = await InvoicePdf.instance.generateCourseInvoice(
-        store: store,
-        s: s,
-        date: DateTime.now(),
-        courseLine: store.primaryCourseLine(s),
-        planName: plan?.name ?? '',
-        monthsAllocated: months,
-        validTill: st.paidTill,
-        admissionFee:
-            s.admissionFeeEnabled && s.admissionFeePaid ? store.admissionFeeAmount : 0,
-        planPrice: planPrice,
-        discount: discount,
-        paid: paidTotal,
-        balance: st.due,
-      );
+      final File file;
+      if (s.ptEnabled) {
+        file = await InvoicePdf.instance.generatePtInvoice(
+          store: store,
+          s: s,
+          date: txnDate,
+          sessionsAllocated: InvoiceMath.sessionsAllocated(
+              paidTotal, s.ptSessionPrice),
+          sessionPrice: s.ptSessionPrice,
+          discount: discount,
+          paid: paidTotal,
+          balance: store.ptRechargeNeed(s),
+        );
+      } else {
+        final admissionFee = txn
+            .where((e) => e.type == kLedgerAdmissionFee)
+            .fold(0.0, (a, e) => a + e.paidAmount);
+        final months = plan?.months ?? 1;
+        final coursePaid = (paidTotal - admissionFee).clamp(0.0, double.infinity);
+        final courseGross = coursePaid + discount;
+        file = await InvoicePdf.instance.generateCourseInvoice(
+          store: store,
+          s: s,
+          date: txnDate,
+          courseLine: store.primaryCourseLine(s),
+          planName: plan?.name ?? '',
+          monthsAllocated: months,
+          validTill: st.paidTill,
+          admissionFee: admissionFee,
+          planPrice: courseGross,
+          discount: discount,
+          paid: paidTotal,
+          balance: st.due,
+        );
+      }
       var ok = await ShareService.instance.documentToWhatsApp(
           mobile: s.mobile,
           path: file.path,

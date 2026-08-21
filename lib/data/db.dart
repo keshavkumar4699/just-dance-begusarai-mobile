@@ -8,7 +8,7 @@ class AppDb {
   static final AppDb instance = AppDb._();
 
   static const _name = 'studio_crow.db';
-  static const _version = 3;
+  static const _version = 6;
 
   Database? _db;
   Future<Database> get db async => _db ??= await _open();
@@ -31,6 +31,51 @@ class AppDb {
     if (from < 3) {
       await d.execute(
           "ALTER TABLE students ADD COLUMN ptDays TEXT DEFAULT ''");
+    }
+    if (from < 4) {
+      await d.execute(
+          "ALTER TABLE studentCourses ADD COLUMN interests TEXT DEFAULT ''");
+
+      try {
+        final oldBatches =
+            await d.rawQuery("SELECT id, name, daysInfo FROM batches");
+        for (final b in oldBatches) {
+          final id = b['id'] as int?;
+          if (id == null) continue;
+          final name = (b['name'] as String? ?? '').toLowerCase();
+          final days = (b['daysInfo'] as String? ?? '').toLowerCase();
+          final isWeekend = name.contains('week') ||
+              name.contains('sat') ||
+              name.contains('sun') ||
+              days.contains('week') ||
+              days.contains('sat') ||
+              days.contains('sun');
+          final newBatchId = isWeekend ? 1 : 2;
+          await d.execute(
+              "UPDATE studentCourses SET batchId = ? WHERE batchId = ?",
+              [newBatchId, id]);
+        }
+      } catch (_) {}
+
+      await d.execute("DROP TABLE IF EXISTS batches");
+      await d.execute("DROP TABLE IF EXISTS timings");
+
+      await d.execute(
+          'CREATE TABLE courseInterests(id INTEGER PRIMARY KEY AUTOINCREMENT, courseId INTEGER NOT NULL, name TEXT NOT NULL, createdAt TEXT NOT NULL)');
+    }
+    if (from < 5) {
+      await d.execute(
+          "ALTER TABLE students ADD COLUMN creditMoney REAL DEFAULT 0");
+      await d.execute(
+          "ALTER TABLE students ADD COLUMN monthsCoveredMoney INTEGER DEFAULT 0");
+    }
+    if (from < 6) {
+      await d.execute(
+          "ALTER TABLE students ADD COLUMN admissionFeeAmount REAL DEFAULT 0");
+      await d.execute(
+          "ALTER TABLE ledger ADD COLUMN termMonths INTEGER DEFAULT 0");
+      await d.execute(
+          "ALTER TABLE ledger ADD COLUMN planDiscount REAL DEFAULT 0");
     }
   }
 
@@ -58,9 +103,12 @@ CREATE TABLE students(
   planId INTEGER,
   admissionFeeEnabled INTEGER DEFAULT 1,
   admissionFeePaid INTEGER DEFAULT 0,
+  admissionFeeAmount REAL DEFAULT 0,
   monthsCovered INTEGER DEFAULT 0,
+  monthsCoveredMoney INTEGER DEFAULT 0,
   cycleBalance REAL DEFAULT 0,
   credit REAL DEFAULT 0,
+  creditMoney REAL DEFAULT 0,
   lastVisitDate TEXT,
   isBlocked INTEGER DEFAULT 0,
   ptEnabled INTEGER DEFAULT 0,
@@ -76,13 +124,11 @@ CREATE TABLE students(
     await d.execute(
         'CREATE TABLE courses(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, fee REAL DEFAULT 0, description TEXT DEFAULT \'\', createdAt TEXT NOT NULL)');
     await d.execute(
-        'CREATE TABLE batches(id INTEGER PRIMARY KEY AUTOINCREMENT, courseId INTEGER NOT NULL, name TEXT NOT NULL, daysInfo TEXT DEFAULT \'\', duration TEXT DEFAULT \'\')');
-    await d.execute(
-        'CREATE TABLE timings(id INTEGER PRIMARY KEY AUTOINCREMENT, batchId INTEGER NOT NULL, label TEXT NOT NULL, startTime TEXT DEFAULT \'\', endTime TEXT DEFAULT \'\')');
+        'CREATE TABLE courseInterests(id INTEGER PRIMARY KEY AUTOINCREMENT, courseId INTEGER NOT NULL, name TEXT NOT NULL, createdAt TEXT NOT NULL)');
     await d.execute(
         'CREATE TABLE plans(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, months INTEGER DEFAULT 1, discountType TEXT DEFAULT \'\', discountValue REAL DEFAULT 0)');
     await d.execute(
-        'CREATE TABLE studentCourses(id INTEGER PRIMARY KEY AUTOINCREMENT, studentId INTEGER NOT NULL, courseId INTEGER NOT NULL, batchId INTEGER DEFAULT 0, timingId INTEGER DEFAULT 0, isPrimary INTEGER DEFAULT 0)');
+        'CREATE TABLE studentCourses(id INTEGER PRIMARY KEY AUTOINCREMENT, studentId INTEGER NOT NULL, courseId INTEGER NOT NULL, batchId INTEGER DEFAULT 0, interests TEXT DEFAULT \'\', isPrimary INTEGER DEFAULT 0)');
     await d.execute(
         'CREATE TABLE attendance(id INTEGER PRIMARY KEY AUTOINCREMENT, studentId INTEGER NOT NULL, courseId INTEGER DEFAULT 0, date TEXT NOT NULL, markedAt TEXT NOT NULL)');
     await d.execute('''
@@ -98,7 +144,9 @@ CREATE TABLE ledger(
   mode TEXT DEFAULT '',
   note TEXT DEFAULT '',
   cyclePrice REAL DEFAULT 0,
-  discount REAL DEFAULT 0
+  discount REAL DEFAULT 0,
+  termMonths INTEGER DEFAULT 0,
+  planDiscount REAL DEFAULT 0
 )''');
     await d.execute(
         'CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT)');
@@ -110,6 +158,8 @@ CREATE TABLE ledger(
         'CREATE INDEX idx_attendance_date ON attendance(date)');
     await d.execute(
         'CREATE INDEX idx_sc_student ON studentCourses(studentId)');
+    await d.execute(
+        'CREATE INDEX idx_ci_course ON courseInterests(courseId)');
   }
 
   Future<void> close() async {

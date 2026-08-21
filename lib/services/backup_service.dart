@@ -29,7 +29,7 @@ const _taskName = 'sc_daily_backup';
 
 /// Tables a full backup must contain (used to detect old/incomplete backups).
 const _tables = [
-  'students', 'courses', 'batches', 'timings', 'plans',
+  'students', 'courses', 'courseInterests', 'plans',
   'studentCourses', 'attendance', 'ledger', 'settings',
 ];
 

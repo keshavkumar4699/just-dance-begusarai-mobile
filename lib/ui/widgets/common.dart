@@ -343,22 +343,26 @@ Future<bool> showConfirmDialog(
 
 void showSnack(BuildContext context, String message,
     {SnackBarAction? action, Duration? duration}) {
+  var d = duration ?? kSnackWarn;
+  if (d > kSnackMax) d = kSnackMax;
   ScaffoldMessenger.of(context)
-    ..hideCurrentSnackBar()
+    ..clearSnackBars()
     ..showSnackBar(SnackBar(
       content: Text(message),
       action: action,
-      duration: duration ?? kSnackWarn,
+      duration: d,
     ));
 }
 
 /// Snackbar timings: quick success feedback, normal info, validation hints,
 /// errors with a moment to read, and long-running messages with actions.
+/// [kSnackMax] is the hard cap — no snackbar may stay longer than 6s.
+const kSnackMax = Duration(seconds: 6);
 const kSnackSuccess = Duration(seconds: 2);
 const kSnackInfo = Duration(seconds: 3);
 const kSnackWarn = Duration(seconds: 4);
 const kSnackError = Duration(seconds: 6);
-const kSnackLong = Duration(seconds: 8);
+const kSnackLong = Duration(seconds: 6);
 const kSnackBackup = Duration(seconds: 4);
 
 // ---------------- form helpers ----------------

@@ -39,7 +39,7 @@ class ProfileTab extends StatelessWidget {
           _navTile(context, c, Icons.category_outlined,
               'Schedule',
               subtitle:
-                  'Courses, batches, timings, plans, admission fee, GST & personal training',
+                  'Courses, interests, plans, admission fee & personal training',
               onTap: () => Navigator.push(context,
                   fadeSlideRoute(CatalogScreen(store: store)))),
           _navTile(context, c, Icons.chat_bubble_outline, 'WhatsApp Templates',
@@ -511,11 +511,11 @@ class _BackupCardState extends State<BackupCard> {
       title: 'Restore backup?',
       message: 'From ${fmtDate(created, forceYear: true)}\n'
           '• ${counts['students'] ?? 0} members\n'
-          '• ${counts['courses'] ?? 0} courses, ${counts['batches'] ?? 0} batches, ${counts['timings'] ?? 0} timings\n'
+          '• ${counts['courses'] ?? 0} courses, ${counts['courseInterests'] ?? 0} interests\n'
           '• ${counts['plans'] ?? 0} plans\n'
           '• ${counts['ledger'] ?? 0} ledger entries, ${counts['attendance'] ?? 0} attendance rows\n'
           '• ${counts['photos'] ?? 0} photos\n'
-          '• Settings (admission fee, GST, templates, studio info)\n\n'
+          '• Settings (admission fee, templates, studio info)\n\n'
           'Your current data is kept as a snapshot with Undo.',
       confirmLabel: 'Restore',
     );
@@ -525,8 +525,7 @@ class _BackupCardState extends State<BackupCard> {
     if (missing.isNotEmpty) {
       final labels = [
         if (missing.contains('courses')) 'Courses',
-        if (missing.contains('batches')) 'Batches',
-        if (missing.contains('timings')) 'Timings',
+        if (missing.contains('courseInterests')) 'Interests',
         if (missing.contains('plans')) 'Plans',
         if (missing.contains('settings')) 'Settings',
         if (missing.contains('studentCourses')) 'Course assignments',

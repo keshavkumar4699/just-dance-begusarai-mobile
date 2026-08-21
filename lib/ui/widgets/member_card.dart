@@ -159,53 +159,44 @@ class _MemberCardState extends State<MemberCard>
     if (_busyReceipt) return;
     setState(() => _busyReceipt = true);
     try {
-      final last = store.lastPaymentOf(s.id);
       final st = store.statusOf(s);
+      final txn = store.lastPaymentTransactionOf(s.id);
+      final txnDate = txn.isNotEmpty ? txn.first.date : DateTime.now();
+      final paidTotal = txn.fold(0.0, (a, e) => a + e.paidAmount);
+      final discount = txn.fold(0.0, (a, e) => a + e.discount);
       final File file;
       if (s.ptEnabled) {
-        final paid = store
-            .ledgerOf(s.id)
-            .where((e) => e.type == kLedgerPtPayment)
-            .fold(0.0, (a, e) => a + e.paidAmount);
-        final discount = store
-            .ledgerOf(s.id)
-            .where((e) => e.type == kLedgerPtPayment)
-            .fold(0.0, (a, e) => a + e.discount);
         file = await InvoicePdf.instance.generatePtInvoice(
           store: store,
           s: s,
-          date: last?.date ?? DateTime.now(),
+          date: txnDate,
           sessionsAllocated: InvoiceMath.sessionsAllocated(
-              paid, s.ptSessionPrice),
+              paidTotal, s.ptSessionPrice),
           sessionPrice: s.ptSessionPrice,
           discount: discount,
-          paid: last?.paidAmount ?? paid,
+          paid: paidTotal,
           balance: store.ptRechargeNeed(s),
         );
       } else {
         final plan = store.planById(s.planId);
-        final entries = store.ledgerOf(s.id);
-        final paidTotal = entries
-            .where((e) =>
-                e.type == kLedgerPayment || e.type == kLedgerAdmissionFee)
+        final admissionFee = txn
+            .where((e) => e.type == kLedgerAdmissionFee)
             .fold(0.0, (a, e) => a + e.paidAmount);
-        final discount = entries.fold(0.0, (a, e) => a + e.discount);
         final months = plan?.months ?? 1;
-        final planPrice = st.cyclePrice * months;
+        final coursePaid = (paidTotal - admissionFee).clamp(0.0, double.infinity);
+        final courseGross = coursePaid + discount;
         file = await InvoicePdf.instance.generateCourseInvoice(
           store: store,
           s: s,
-          date: last?.date ?? DateTime.now(),
+          date: txnDate,
           courseLine: store.primaryCourseLine(s),
           planName: plan?.name ?? '',
           monthsAllocated: months,
           validTill: st.paidTill,
-          admissionFee: s.admissionFeeEnabled && s.admissionFeePaid
-              ? store.admissionFeeAmount
-              : 0,
-          planPrice: planPrice,
-          discount: last?.discount ?? discount,
-          paid: last != null ? last.paidAmount : paidTotal,
+          admissionFee: admissionFee,
+          planPrice: courseGross,
+          discount: discount,
+          paid: paidTotal,
           balance: st.due,
         );
       }
@@ -242,6 +233,18 @@ class _MemberCardState extends State<MemberCard>
         remind ? kTemplateFeesDue : kTemplateWelcome, store, s);
     final ok = await WhatsAppService.instance.openChat(s.mobile, msg);
     if (!ok && mounted) showSnack(context, 'No WhatsApp on this number', duration: kSnackWarn);
+  }
+
+  Future<void> _payDue() async {
+    final st = store.statusOf(s);
+    if (!st.hasDue) {
+      if (mounted) {
+        showSnack(context, 'All dues are cleared. Renew plan for next cycle.',
+            duration: kSnackInfo);
+      }
+      return;
+    }
+    await showPaymentDialog(context, store, s, renew: false);
   }
 
   Future<void> _renew() async {
@@ -475,8 +478,13 @@ class _MemberCardState extends State<MemberCard>
         line2Color = c.active;
       }
     } else {
-      line2 = 'Valid till ${fmtDate(st.paidTill)}${st.hasDue ? ' · Due ${fmtMoney(st.due)}' : ''}';
-      line2Color = st.hasDue ? c.nearExpiry : c.textMuted;
+      final feeStatusText = st.hasDue
+          ? ' · Due ${fmtMoney(st.due)}'
+          : (st.advance > 0 ? ' · Adv ${fmtMoney(st.advance)}' : ' · Paid');
+      line2 = 'Valid till ${fmtDate(st.paidTill)}$feeStatusText';
+      line2Color = st.hasDue
+          ? c.expired
+          : (st.advance > 0 ? c.gold : (st.daysLeft <= 7 ? c.nearExpiry : c.active));
     }
 
     return Padding(
@@ -529,6 +537,7 @@ class _MemberCardState extends State<MemberCard>
 
   Widget _actionRow(AppColors c) {
     final present = store.isPresentToday(s);
+    final st = store.statusOf(s);
     Widget action(Widget iconWidget, VoidCallback onTap,
         {bool loading = false}) {
       return Pressable(
@@ -552,11 +561,16 @@ class _MemberCardState extends State<MemberCard>
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
-            // 1. Renew
+            // 1. Pay Due (if dues exist)
+            if (st.hasDue)
+              action(
+                  Icon(Icons.payments_outlined, size: 23, color: c.expired),
+                  _payDue),
+            // 2. Renew
             action(
                 Icon(Icons.autorenew_outlined, size: 23, color: c.gold),
                 _renew),
-            // 2. Share Receipt
+            // 3. Share Receipt
             action(
                 Icon(Icons.receipt_long_outlined, size: 23, color: c.textMuted),
                 _shareReceipt,

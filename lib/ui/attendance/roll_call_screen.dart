@@ -24,13 +24,30 @@ class RollCallScreen extends StatefulWidget {
 }
 
 class _RollCallScreenState extends State<RollCallScreen> {
-  int _batchId = 0; // 0 = all students
+  String _filterKey = 'all'; // 'all' or '<courseId>_<batchId>'
 
   AppStore get store => widget.store;
 
-  List<Student> get _roster => _batchId == 0
-      ? store.students.where((s) => !s.isBlocked).toList()
-      : store.studentsOfBatch(_batchId);
+  List<Student> get _roster {
+    if (_filterKey == 'all') {
+      return store.students.where((s) => !s.isBlocked).toList();
+    }
+    final parts = _filterKey.split('_');
+    if (parts.length != 2) {
+      return store.students.where((s) => !s.isBlocked).toList();
+    }
+    final cid = int.tryParse(parts[0]) ?? 0;
+    final bid = int.tryParse(parts[1]) ?? 0;
+
+    final studentIds = store.studentCourses
+        .where((sc) => sc.courseId == cid && sc.batchId == bid)
+        .map((sc) => sc.studentId)
+        .toSet();
+
+    return store.students
+        .where((s) => studentIds.contains(s.id) && !s.isBlocked)
+        .toList();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -56,21 +73,23 @@ class _RollCallScreenState extends State<RollCallScreen> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 4, 24, 4),
-            child: AppDropdown<int>(
-              value: _batchId == 0 ? null : _batchId,
+            child: AppDropdown<String>(
+              value: _filterKey,
               hint: 'All students',
               items: [
-                const DropdownMenuItem(value: 0, child: Text('All students')),
-                for (final b in store.batches)
+                const DropdownMenuItem(value: 'all', child: Text('All students')),
+                for (final course in store.courses) ...[
                   DropdownMenuItem(
-                      value: b.id,
-                      child: Text(
-                          '${store.courseById(b.courseId)?.name ?? ''} — ${b.name}'
-                          '${b.daysInfo.isEmpty ? '' : ' · ${b.daysInfo}'}'
-                          '${b.duration.isEmpty ? '' : ' · ${b.duration}'}',
+                      value: '${course.id}_$kBatchWeekend',
+                      child: Text('${course.name} — Weekend (Sat–Sun, 2h)',
                           overflow: TextOverflow.ellipsis)),
+                  DropdownMenuItem(
+                      value: '${course.id}_$kBatchWeekdays',
+                      child: Text('${course.name} — Weekdays (Mon–Fri, 1h)',
+                          overflow: TextOverflow.ellipsis)),
+                ],
               ],
-              onChanged: (v) => setState(() => _batchId = v ?? 0),
+              onChanged: (v) => setState(() => _filterKey = v ?? 'all'),
             ),
           ),
           Padding(
@@ -125,9 +144,9 @@ class _RollCallScreenState extends State<RollCallScreen> {
                 ? EmptyState(
                     icon: Icons.groups_outlined,
                     title: 'No students here',
-                    hint: _batchId == 0
+                    hint: _filterKey == 'all'
                         ? 'Add members first.'
-                        : 'No students assigned to this batch yet.',
+                        : 'No students assigned to this course batch yet.',
                   )
                 : ListView(
                     padding: const EdgeInsets.fromLTRB(24, 12, 24, 8),

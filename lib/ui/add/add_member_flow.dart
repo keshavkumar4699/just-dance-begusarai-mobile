@@ -240,10 +240,16 @@ class _PhotoSourceSheet extends StatelessWidget {
 class _CourseSel {
   int courseId;
   int batchId;
-  int timingId;
+  Set<int> selectedInterests;
   bool isPrimary;
-  _CourseSel(
-      {this.courseId = 0, this.batchId = 0, this.timingId = 0, this.isPrimary = false});
+  _CourseSel({
+    this.courseId = 0,
+    this.batchId = 0,
+    Set<int>? selectedInterests,
+    this.isPrimary = false,
+  }) : selectedInterests = selectedInterests ?? {};
+
+  String get interestsCsv => selectedInterests.join(',');
 }
 
 class AddDetailsPage extends StatefulWidget {
@@ -306,7 +312,7 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
   late List<_CourseSel> _courses;
   // Fees
   late bool _admissionFeeEnabled;
-  late bool _admissionFeePaid;
+  bool _admissionFeePrepaid = false;
   int? _planId;
   late final TextEditingController _firstPayment;
   String _mode = kModeCash;
@@ -360,7 +366,6 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
     _marital = e?.maritalStatus ?? '';
     _mobile = TextEditingController(text: e?.mobile ?? '');
     _altMobile = TextEditingController(text: e?.altMobile ?? '');
-    _admissionFeePaid = e?.admissionFeePaid ?? false;
     _planId = e?.planId ?? (store.plans.isEmpty ? null : store.plans.first.id);
     if (_planId != null && !store.plans.any((p) => p.id == _planId)) {
       _planId = null;
@@ -372,27 +377,23 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
       final scs = store.coursesOf(e.id);
       _courses = scs
           .map((sc) => _CourseSel(
-              courseId: sc.courseId,
-              batchId: sc.batchId,
-              timingId: sc.timingId,
-              isPrimary: sc.isPrimary))
+                courseId: sc.courseId,
+                batchId: sc.batchId,
+                selectedInterests: sc.interests.isNotEmpty
+                    ? sc.interests
+                        .split(',')
+                        .map((x) => int.tryParse(x.trim()))
+                        .whereType<int>()
+                        .toSet()
+                    : <int>{},
+                isPrimary: sc.isPrimary,
+              ))
           .toList();
-      // Drop references that no longer exist (e.g. after restoring an old
-      // backup) so the dropdowns never receive a dangling value.
       for (final sel in _courses) {
         if (!store.courses.any((x) => x.id == sel.courseId)) {
           sel.courseId = 0;
           sel.batchId = 0;
-          sel.timingId = 0;
-        }
-        if (!store.batches
-            .any((x) => x.id == sel.batchId && x.courseId == sel.courseId)) {
-          sel.batchId = 0;
-          sel.timingId = 0;
-        }
-        if (!store.timings
-            .any((x) => x.id == sel.timingId && x.batchId == sel.batchId)) {
-          sel.timingId = 0;
+          sel.selectedInterests.clear();
         }
       }
       if (_courses.isEmpty) _courses = [_CourseSel(isPrimary: true)];
@@ -452,6 +453,29 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
     if (raw <= 0) return 0;
     final d = _discountPercent ? _planGross * raw / 100 : raw;
     return d.clamp(0.0, _planGross);
+  }
+
+  PlanFeeCalc get _planCalc => FeeEngine.calculatePlanFee(
+        monthlyFee: _cyclePrice,
+        planMonths: store.planById(_planId)?.months ?? 1,
+        discountType: store.planById(_planId)?.discountType ?? '',
+        discountValue: store.planById(_planId)?.discountValue ?? 0,
+        manualDiscount: _discountValue,
+      );
+
+  double get _totalCommitted {
+    final plan = store.planById(_planId);
+    final months = plan?.months ?? 1;
+    final gross = _cyclePrice * months;
+    final calc = FeeEngine.calculatePlanFee(
+      monthlyFee: _cyclePrice,
+      planMonths: months,
+      discountType: plan?.discountType ?? '',
+      discountValue: plan?.discountValue ?? 0,
+      manualDiscount: 0,
+    );
+    final adm = (_admissionFeeEnabled && !_admissionFeePrepaid) ? store.admissionFeeAmount : 0.0;
+    return (gross - calc.multipleMonthsDiscount + adm).clamp(0.0, double.infinity);
   }
 
   Future<void> _retakePhoto() async {
@@ -515,6 +539,7 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
         admissionDate: _admissionDate,
         planId: _ptMode ? null : _planId,
         admissionFeeEnabled: _admissionFeeEnabled,
+        admissionFeeAmount: store.admissionFeeAmount,
         ptEnabled: _ptMode,
         ptTiming: _ptMode ? _ptTiming.text.trim() : '',
         ptDays: _ptMode ? _ptDays : '',
@@ -528,7 +553,7 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
               .map((e) => StudentCourse(
                   courseId: e.courseId,
                   batchId: e.batchId,
-                  timingId: e.timingId,
+                  interests: e.interestsCsv,
                   isPrimary: e.isPrimary))
               .toList();
       await store.addStudent(s, scs);
@@ -540,16 +565,40 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
           await store.recordPtPayment(s, recharge, _mode);
         }
       } else {
-        // Ledger: admission fee (if marked paid) + first payment + discount.
-        final admissionCash = (_admissionFeeEnabled && _admissionFeePaid)
-            ? store.admissionFeeAmount
-            : 0.0;
+        // 1. If admission fee was already paid earlier on back-date, record it dated on admission date:
+        if (_admissionFeeEnabled && _admissionFeePrepaid) {
+          await store.markAdmissionFeePaid(s, date: _admissionDate, mode: _mode);
+        }
+
+        // 2. Snapshot the initial plan term:
+        if (_planId != null) {
+          final plan = store.planById(_planId);
+          final planMonths = plan?.months ?? 1;
+          final calc = FeeEngine.calculatePlanFee(
+            monthlyFee: _cyclePrice,
+            planMonths: planMonths,
+            discountType: plan?.discountType ?? '',
+            discountValue: plan?.discountValue ?? 0,
+            manualDiscount: _discountValue,
+          );
+          await store.addPlanTerm(
+            s: s,
+            months: planMonths,
+            cyclePrice: _cyclePrice,
+            discount: calc.multipleMonthsDiscount,
+            date: _admissionDate,
+            note: plan?.name ?? '',
+          );
+        }
+
+        // 3. First payment + manual discount:
         final first = double.tryParse(_firstPayment.text.trim()) ?? 0;
-        if (admissionCash + first > 0 || _discountValue > 0) {
+        if (first > 0 || _discountValue > 0) {
           await store.addPayment(
             s: s,
-            amount: admissionCash + first,
-            discount: _discountValue,
+            amount: first,
+            planId: _planId,
+            manualDiscount: _discountValue,
             mode: _mode,
             note: 'Admission',
             date: _admissionDate,
@@ -606,7 +655,7 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
         .map((x) => StudentCourse(
             courseId: x.courseId,
             batchId: x.batchId,
-            timingId: x.timingId,
+            interests: x.interestsCsv,
             isPrimary: x.isPrimary))
         .toList();
     await store.updateStudent(e, sc: scs);
@@ -806,7 +855,7 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
               _feesSection(c),
               const SizedBox(height: 24),
               GoldButton(
-                isEdit ? 'Save Changes' : 'Save Member',
+                isEdit ? 'Save Changes' : 'Add Member',
                 icon: Icons.check,
                 onTap: _saving ? null : _save,
               ),
@@ -1008,10 +1057,6 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
 
   Widget _courseRow(AppColors c, int i) {
     final sel = _courses[i];
-    final courseBatches =
-        store.batches.where((b) => b.courseId == sel.courseId).toList();
-    final batchTimings =
-        store.timings.where((t) => t.batchId == sel.batchId).toList();
     return Container(
       margin: const EdgeInsets.only(top: 10),
       padding: const EdgeInsets.all(12),
@@ -1041,7 +1086,7 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
                   onChanged: (v) => setState(() {
                     sel.courseId = v ?? 0;
                     sel.batchId = 0;
-                    sel.timingId = 0;
+                    sel.selectedInterests.clear();
                     if (_courses.every((e) => !e.isPrimary)) {
                       sel.isPrimary = true;
                     }
@@ -1078,42 +1123,52 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
           if (sel.courseId != 0) ...[
             const SizedBox(height: 8),
             AppDropdown<int>(
-              value: courseBatches.any((b) => b.id == sel.batchId)
+              value: (sel.batchId == kBatchWeekend || sel.batchId == kBatchWeekdays)
                   ? sel.batchId
                   : null,
-              hint: courseBatches.isEmpty ? 'No batches for this course' : 'Batch',
-              items: [
-                for (final b in courseBatches)
-                  DropdownMenuItem(
-                      value: b.id,
-                      child: Text([
-                        b.name,
-                        if (b.daysInfo.isNotEmpty) b.daysInfo,
-                        if (b.duration.isNotEmpty) b.duration,
-                      ].join(' · ')))
+              hint: 'Batch',
+              items: const [
+                DropdownMenuItem(
+                    value: kBatchWeekend,
+                    child: Text('Weekend (Sat–Sun, 2 hours)')),
+                DropdownMenuItem(
+                    value: kBatchWeekdays,
+                    child: Text('Weekdays (Mon–Fri, 1 hour)')),
               ],
               onChanged: (v) => setState(() {
                 sel.batchId = v ?? 0;
-                sel.timingId = 0;
               }),
             ),
-          ],
-          if (sel.batchId != 0) ...[
-            const SizedBox(height: 8),
-            AppDropdown<int>(
-              value: batchTimings.any((t) => t.id == sel.timingId)
-                  ? sel.timingId
-                  : null,
-              hint: batchTimings.isEmpty ? 'No timings for this batch' : 'Timing',
-              items: [
-                for (final t in batchTimings)
-                  DropdownMenuItem(
-                      value: t.id,
-                      child: Text(
-                          '${t.label}${t.startTime.isEmpty ? '' : ' · ${t.startTime}–${t.endTime}'}'))
-              ],
-              onChanged: (v) => setState(() => sel.timingId = v ?? 0),
-            ),
+            Builder(builder: (_) {
+              final availableInterests = store.interestsOf(sel.courseId);
+              if (availableInterests.isEmpty) return const SizedBox.shrink();
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 8),
+                  Text('Interests', style: TextStyle(color: c.textMuted, fontSize: 11.5)),
+                  const SizedBox(height: 4),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final interest in availableInterests)
+                        FilterChip(
+                          label: Text(interest.name),
+                          selected: sel.selectedInterests.contains(interest.id),
+                          onSelected: (selected) => setState(() {
+                            if (selected) {
+                              sel.selectedInterests.add(interest.id);
+                            } else {
+                              sel.selectedInterests.remove(interest.id);
+                            }
+                          }),
+                        ),
+                    ],
+                  ),
+                ],
+              );
+            }),
           ],
         ],
       ),
@@ -1185,24 +1240,25 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
           value: _admissionFeeEnabled,
           onChanged: (v) => setState(() => _admissionFeeEnabled = v),
         ),
-        if (_admissionFeeEnabled && !isEdit) ...[
+        if (isBackDated && _admissionFeeEnabled && !isEdit) ...[
+          const SizedBox(height: 4),
+          const FieldLabel('Admission fee already paid?'),
           Row(
             children: [
-              Text('Admission fee paid?',
-                  style: TextStyle(color: c.textMuted, fontSize: 13)),
-              const SizedBox(width: 12),
-              for (final (label, v) in const [('Yes', true), ('No', false)])
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: ChoiceChip(
-                    label: Text(label),
-                    selected: _admissionFeePaid == v,
-                    onSelected: (_) =>
-                        setState(() => _admissionFeePaid = v),
-                  ),
-                ),
+              ChoiceChip(
+                label: const Text('Not paid'),
+                selected: !_admissionFeePrepaid,
+                onSelected: (_) => setState(() => _admissionFeePrepaid = false),
+              ),
+              const SizedBox(width: 8),
+              ChoiceChip(
+                label: const Text('Paid earlier (back-date)'),
+                selected: _admissionFeePrepaid,
+                onSelected: (_) => setState(() => _admissionFeePrepaid = true),
+              ),
             ],
           ),
+          const SizedBox(height: 6),
         ],
         if (_ptMode) ...[
           if (!isEdit) ...[
@@ -1238,23 +1294,98 @@ class _AddDetailsPageState extends State<AddDetailsPage> {
             ],
             onChanged: (v) => setState(() => _planId = v),
           ),
-          if (_cyclePrice > 0 && _planId != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(
-                '${fmtMoney(_cyclePrice)}/month × ${store.planById(_planId)?.months ?? 1} = ${fmtMoney(_planGross)}',
-                style: TextStyle(color: c.textMuted, fontSize: 12),
+          if (_cyclePrice > 0 && _planId != null) ...[
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: c.surface2,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: c.hairline),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Plan Commitment: ${store.planById(_planId)?.name ?? ''} (${store.planById(_planId)?.months ?? 1}mo)',
+                    style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12.5,
+                        color: c.text),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${fmtMoney(_cyclePrice)}/mo × ${store.planById(_planId)?.months ?? 1} = ${fmtMoney(_planGross)}'
+                    '${_planCalc.multipleMonthsDiscount > 0 ? ' − ${fmtMoney(_planCalc.multipleMonthsDiscount)} (plan disc)' : ''}'
+                    '${_admissionFeeEnabled && !_admissionFeePrepaid ? ' + ${fmtMoney(store.admissionFeeAmount)} (admission)' : ''}'
+                    ' = Total ${fmtMoney(_totalCommitted)} (due if unpaid)',
+                    style: TextStyle(
+                        color: c.textMuted, fontSize: 12, height: 1.4),
+                  ),
+                ],
               ),
             ),
+          ],
           if (!isEdit) ...[
             const FieldLabel('First payment (₹)'),
             TextFormField(
-                    scrollPadding: const EdgeInsets.only(bottom: 200),
+              scrollPadding: const EdgeInsets.only(bottom: 200),
               controller: _firstPayment,
               validator: (v) => validateAmount(v, required: false),
               keyboardType: TextInputType.number,
               decoration: const InputDecoration(hintText: '0'),
             ),
+            if (!_ptMode && _cyclePrice > 0) ...[
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  ActionChip(
+                    label: Text(
+                      'Full Plan (${fmtMoney(_totalCommitted)})',
+                      style: const TextStyle(
+                          fontSize: 11.5, fontWeight: FontWeight.w600),
+                    ),
+                    onPressed: () => setState(() {
+                      _firstPayment.text = _totalCommitted.round().toString();
+                    }),
+                  ),
+                  if (isBackDated && cycles > 1)
+                    ActionChip(
+                      label: Text(
+                        'All $cycles cycles (${fmtMoney(cycles * _cyclePrice + (_admissionFeeEnabled && !_admissionFeePrepaid ? store.admissionFeeAmount : 0))})',
+                        style: const TextStyle(
+                            fontSize: 11.5, fontWeight: FontWeight.w600),
+                      ),
+                      onPressed: () => setState(() {
+                        final total = (cycles * _cyclePrice +
+                                (_admissionFeeEnabled && !_admissionFeePrepaid
+                                    ? store.admissionFeeAmount
+                                    : 0))
+                            .round();
+                        _firstPayment.text = total.toString();
+                      }),
+                    ),
+                  ActionChip(
+                    label: Text(
+                      '1 Month (${fmtMoney(_cyclePrice + (_admissionFeeEnabled && !_admissionFeePrepaid ? store.admissionFeeAmount : 0))})',
+                      style: const TextStyle(
+                          fontSize: 11.5, fontWeight: FontWeight.w600),
+                    ),
+                    onPressed: () => setState(() {
+                      final total = (_cyclePrice +
+                              (_admissionFeeEnabled && !_admissionFeePrepaid
+                                  ? store.admissionFeeAmount
+                                  : 0))
+                          .round();
+                      _firstPayment.text = total.toString();
+                    }),
+                  ),
+                ],
+              ),
+            ],
             const FieldLabel('Mode'),
             Row(
               children: [
@@ -1327,9 +1458,10 @@ class _WelcomeSheetState extends State<_WelcomeSheet> {
         (e) => e?.id == widget.studentId,
         orElse: () => null,
       );
-  Student get s => _student!;
 
   Future<void> _welcome() async {
+    final s = _student;
+    if (s == null) return;
     final msg = WhatsAppService.instance.build(kTemplateWelcome, store, s);
     final ok = await WhatsAppService.instance.openChat(s.mobile, msg);
     if (!ok && mounted) {
@@ -1338,6 +1470,8 @@ class _WelcomeSheetState extends State<_WelcomeSheet> {
   }
 
   Future<void> _sendId() async {
+    final s = _student;
+    if (s == null) return;
     try {
       final file = await CardImages.instance
           .generateIdCard(store: store, s: s, status: store.statusOf(s));
@@ -1356,48 +1490,47 @@ class _WelcomeSheetState extends State<_WelcomeSheet> {
   }
 
   Future<void> _sendInvoice() async {
+    final s = _student;
+    if (s == null) return;
     final st = store.statusOf(s);
+    final txn = store.lastPaymentTransactionOf(s.id);
+    final txnDate = txn.isNotEmpty ? txn.first.date : s.admissionDate;
+    final paidTotal = txn.fold(0.0, (a, e) => a + e.paidAmount);
+    final discount = txn.fold(0.0, (a, e) => a + e.discount);
     try {
       final File file;
       if (s.ptEnabled) {
-        final paid = store
-            .ledgerOf(s.id)
-            .where((e) => e.type == kLedgerPtPayment)
-            .fold(0.0, (a, e) => a + e.paidAmount);
         file = await InvoicePdf.instance.generatePtInvoice(
           store: store,
           s: s,
-          date: DateTime.now(),
-          sessionsAllocated: s.ptSessions,
+          date: txnDate,
+          sessionsAllocated: InvoiceMath.sessionsAllocated(
+              paidTotal, s.ptSessionPrice),
           sessionPrice: s.ptSessionPrice,
-          discount: 0,
-          paid: paid,
-          balance: st.due,
+          discount: discount,
+          paid: paidTotal,
+          balance: store.ptRechargeNeed(s),
         );
       } else {
         final plan = store.planById(s.planId);
-        final entries = store.ledgerOf(s.id);
-        final paid = entries
-            .where((e) =>
-                e.type == kLedgerPayment || e.type == kLedgerAdmissionFee)
+        final admissionFee = txn
+            .where((e) => e.type == kLedgerAdmissionFee)
             .fold(0.0, (a, e) => a + e.paidAmount);
-        final discount = entries.fold(0.0, (a, e) => a + e.discount);
         final months = plan?.months ?? 1;
-        final planPrice = st.cyclePrice * months;
+        final coursePaid = (paidTotal - admissionFee).clamp(0.0, double.infinity);
+        final courseGross = coursePaid + discount;
         file = await InvoicePdf.instance.generateCourseInvoice(
           store: store,
           s: s,
-          date: DateTime.now(),
+          date: txnDate,
           courseLine: store.primaryCourseLine(s),
           planName: plan?.name ?? '',
           monthsAllocated: months,
           validTill: st.paidTill,
-          admissionFee: s.admissionFeeEnabled && s.admissionFeePaid
-              ? store.admissionFeeAmount
-              : 0,
-          planPrice: planPrice,
+          admissionFee: admissionFee,
+          planPrice: courseGross,
           discount: discount,
-          paid: paid,
+          paid: paidTotal,
           balance: st.due,
         );
       }
@@ -1419,6 +1552,8 @@ class _WelcomeSheetState extends State<_WelcomeSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final s = _student;
+    if (s == null) return const SizedBox.shrink();
     final c = AppColors.of(context);
     Widget btn(Widget icon, String label, Future<void> Function() onTap,
             {bool isPrimary = true}) =>

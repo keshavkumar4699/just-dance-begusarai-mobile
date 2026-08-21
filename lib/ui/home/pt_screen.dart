@@ -499,7 +499,7 @@ class _SwitchToCourseSheet extends StatefulWidget {
 class _SwitchToCourseSheetState extends State<_SwitchToCourseSheet> {
   int _courseId = 0;
   int _batchId = 0;
-  int _timingId = 0;
+  final Set<int> _selectedInterests = {};
   int? _planId;
   bool _busy = false;
 
@@ -514,7 +514,7 @@ class _SwitchToCourseSheetState extends State<_SwitchToCourseSheet> {
         StudentCourse(
             courseId: _courseId,
             batchId: _batchId,
-            timingId: _timingId,
+            interests: _selectedInterests.join(','),
             isPrimary: true)
       ];
       s.ptEnabled = false;
@@ -535,10 +535,8 @@ class _SwitchToCourseSheetState extends State<_SwitchToCourseSheet> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
-    final courseBatches =
-        store.batches.where((b) => b.courseId == _courseId).toList();
-    final batchTimings =
-        store.timings.where((t) => t.batchId == _batchId).toList();
+    final availableInterests =
+        _courseId != 0 ? store.interestsOf(_courseId) : <CourseInterest>[];
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
       child: SingleChildScrollView(
@@ -566,44 +564,52 @@ class _SwitchToCourseSheetState extends State<_SwitchToCourseSheet> {
               onChanged: (v) => setState(() {
                 _courseId = v ?? 0;
                 _batchId = 0;
-                _timingId = 0;
+                _selectedInterests.clear();
               }),
             ),
             if (_courseId != 0) ...[
               const FieldLabel('Batch'),
               AppDropdown<int>(
-                value: _batchId == 0 ? null : _batchId,
-                hint: courseBatches.isEmpty ? 'No batch' : 'Batch',
-                items: [
-                  for (final b in courseBatches)
-                    DropdownMenuItem(
-                        value: b.id,
-                        child: Text([
-                          b.name,
-                          if (b.daysInfo.isNotEmpty) b.daysInfo,
-                          if (b.duration.isNotEmpty) b.duration,
-                        ].join(' · ')))
+                value: (_batchId == kBatchWeekend || _batchId == kBatchWeekdays)
+                    ? _batchId
+                    : null,
+                hint: 'Batch',
+                items: const [
+                  DropdownMenuItem(
+                      value: kBatchWeekend,
+                      child: Text('Weekend (Sat–Sun, 2 hours)')),
+                  DropdownMenuItem(
+                      value: kBatchWeekdays,
+                      child: Text('Weekdays (Mon–Fri, 1 hour)')),
                 ],
                 onChanged: (v) => setState(() {
                   _batchId = v ?? 0;
-                  _timingId = 0;
                 }),
               ),
-            ],
-            if (_batchId != 0) ...[
-              const FieldLabel('Timing'),
-              AppDropdown<int>(
-                value: _timingId == 0 ? null : _timingId,
-                hint: batchTimings.isEmpty ? 'No timing' : 'Timing',
-                items: [
-                  for (final t in batchTimings)
-                    DropdownMenuItem(
-                        value: t.id,
-                        child: Text(
-                            '${t.label}${t.startTime.isEmpty ? '' : ' · ${t.startTime}–${t.endTime}'}'))
-                ],
-                onChanged: (v) => setState(() => _timingId = v ?? 0),
-              ),
+              if (availableInterests.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text('Interests',
+                    style: TextStyle(color: c.textMuted, fontSize: 11.5)),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final interest in availableInterests)
+                      FilterChip(
+                        label: Text(interest.name),
+                        selected: _selectedInterests.contains(interest.id),
+                        onSelected: (selected) => setState(() {
+                          if (selected) {
+                            _selectedInterests.add(interest.id);
+                          } else {
+                            _selectedInterests.remove(interest.id);
+                          }
+                        }),
+                      ),
+                  ],
+                ),
+              ],
             ],
             const FieldLabel('Plan'),
             AppDropdown<int>(

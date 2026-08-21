@@ -1,20 +1,24 @@
 /// Just Dance — Fee Engine v2 (pure Dart, ledger-based, realtime).
 ///
-/// Model
-/// -----
-/// Every student's fee position is derived from three persisted numbers on the
-/// student row plus the immutable ledger:
-///   * monthsCovered — how many full monthly cycles are paid for.
-///   * credit        — leftover money pool (< one cycle price, unless a course
-///                     fee edit just made it larger — see AUTO_CREDIT_ADJUST).
-///   * admissionFeePaidAmount — folded from ADMISSION_FEE_PAID entries.
-///
-/// Cycles start on the admission date and each calendar month after it
-/// (calendar-safe: Jan 31 -> Feb 28). A cycle is payable from its first day,
-/// so with zero payments the full first cycle is due from admission day.
-///
-/// Status is NEVER stored — it is recomputed on render, on resume, at midnight
-/// and after every mutation.
+/// Flowchart Implementation:
+/// -------------------------
+/// 1. User submits fees (S).
+/// 2. If admission fee is levied and not paid:
+///    - Deduct admission fee from S (admissionFeeRemaining).
+///    - leftOutSubmittedFee = S - admissionFeeDeducted.
+/// 3. When settling advance payments:
+///    - Existing advance fee is adjusted towards total course fees.
+///    - leftOutSubmittedFee = leftOutSubmittedFee + existingAdvance.
+/// 4. Calculate total discount:
+///    - totalDiscount = manualDiscount + multipleMonthsDiscount.
+/// 5. Calculate total course fees:
+///    - totalCourseFees = (monthlyFees * numberOfMonths) - totalDiscount.
+/// 6. Calculate amount remaining:
+///    - amountRemaining = leftOutSubmittedFee - totalCourseFees.
+/// 7. Evaluate amount remaining:
+///    - amountRemaining > 0: Advance payment of remaining amount (adjusted in next billing cycle).
+///    - amountRemaining == 0: No dues, no advance, full paid.
+///    - amountRemaining < 0: Dues will be remaining negative amount.
 library;
 
 import '../core/utils.dart';
@@ -23,13 +27,28 @@ import 'models.dart';
 class FeeState {
   int monthsCovered;
   double credit;
+  int monthsCoveredMoney;
+  double creditMoney;
   double admissionFeePaidAmount;
   double ptPaid;
+  double coveredValue; // Σ snapshot price of consumed cycles
+  int termMonthsTotal; // total committed term months
+  double termGross; // total committed term gross
+  double termDiscountTotal; // total committed plan discount
+  double realizedPlanDiscount; // plan discount realized into credit pool
+
   FeeState({
     this.monthsCovered = 0,
     this.credit = 0,
+    this.monthsCoveredMoney = 0,
+    this.creditMoney = 0,
     this.admissionFeePaidAmount = 0,
     this.ptPaid = 0,
+    this.coveredValue = 0,
+    this.termMonthsTotal = 0,
+    this.termGross = 0,
+    this.termDiscountTotal = 0,
+    this.realizedPlanDiscount = 0,
   });
 
   double cycleBalance(double cyclePrice) =>
@@ -64,12 +83,115 @@ class FeeStatus {
   });
 
   bool get hasDue => due > 0.004; // ignore paisa-level float dust
+  bool get hasAdvance => advance > 0.004;
+}
+
+/// Course fee and discount breakdown from flowchart.
+class PlanFeeCalc {
+  final double monthlyFee;
+  final int planMonths;
+  final double grossFee; // monthlyFee * planMonths
+  final double multipleMonthsDiscount; // multi-month course discount
+  final double manualDiscount;
+  final double totalDiscount; // multipleMonthsDiscount + manualDiscount
+  final double totalCourseFees; // grossFee - totalDiscount
+
+  const PlanFeeCalc({
+    required this.monthlyFee,
+    required this.planMonths,
+    required this.grossFee,
+    required this.multipleMonthsDiscount,
+    required this.manualDiscount,
+    required this.totalDiscount,
+    required this.totalCourseFees,
+  });
+}
+
+class PaymentSplit {
+  final double toAdmission;
+  final double toPlan;
+  final double multipleMonthsDiscount;
+  final double manualDiscount;
+  final double totalDiscount;
+  final double totalCourseFees;
+  final double amountRemaining;
+
+  const PaymentSplit({
+    required this.toAdmission,
+    required this.toPlan,
+    this.multipleMonthsDiscount = 0,
+    this.manualDiscount = 0,
+    this.totalDiscount = 0,
+    this.totalCourseFees = 0,
+    this.amountRemaining = 0,
+  });
 }
 
 class FeeEngine {
+  /// Number of billing cycles elapsed/started up to [today] from [admissionDate].
+  static int cyclesStarted(DateTime admissionDate, DateTime today) {
+    final t = dateOnly(today);
+    final a = dateOnly(admissionDate);
+    return a.isAfter(t) ? 0 : monthDiff(a, t) + 1;
+  }
+
+  /// Calculates total course fees and discounts according to flowchart:
+  /// - totalDiscount = manualDiscount + multipleMonthsDiscount
+  /// - totalCourseFees = (monthlyFees * numberOfMonths) - totalDiscount
+  static PlanFeeCalc calculatePlanFee({
+    required double monthlyFee,
+    required int planMonths,
+    String discountType = '',
+    double discountValue = 0,
+    double manualDiscount = 0,
+  }) {
+    final months = planMonths > 0 ? planMonths : 1;
+    final gross = monthlyFee * months;
+    var multiMonthDisc = 0.0;
+    if (discountValue > 0) {
+      if (discountType == 'percent') {
+        multiMonthDisc = gross * discountValue / 100;
+      } else if (discountType == 'rs') {
+        multiMonthDisc = discountValue;
+      }
+    }
+    multiMonthDisc = multiMonthDisc.clamp(0.0, gross);
+    final mDisc = manualDiscount.clamp(0.0, gross - multiMonthDisc);
+    final totDisc = (multiMonthDisc + mDisc).clamp(0.0, gross);
+    final totalCourseFees = (gross - totDisc).clamp(0.0, gross);
+
+    return PlanFeeCalc(
+      monthlyFee: monthlyFee,
+      planMonths: months,
+      grossFee: gross,
+      multipleMonthsDiscount: multiMonthDisc,
+      manualDiscount: mDisc,
+      totalDiscount: totDisc,
+      totalCourseFees: totalCourseFees,
+    );
+  }
+
+  static void _consumeCycle(FeeState state, double cyclePrice) {
+    state.credit -= cyclePrice;
+    state.monthsCovered += 1;
+    state.coveredValue += cyclePrice;
+    if (state.creditMoney > 0) {
+      final moneyUsed = state.creditMoney >= cyclePrice ? cyclePrice : state.creditMoney;
+      state.creditMoney -= moneyUsed;
+      if (moneyUsed >= cyclePrice - 0.004) {
+        state.monthsCoveredMoney += 1;
+      }
+    }
+    if (state.creditMoney < 0.005) state.creditMoney = 0;
+    if (state.credit < 0.005) {
+      state.credit = 0;
+      state.creditMoney = 0;
+    }
+  }
+
   /// Fold the ledger (stable order: date, id) into a [FeeState].
-  /// PAYMENT entries carry a cycle-price snapshot so replay is deterministic
-  /// even after course fee edits (edits are future-only).
+  /// PAYMENT and PLAN_TERM entries carry cycle-price and discount snapshots
+  /// so replay is fully deterministic.
   static FeeState replay(List<LedgerEntry> entries) {
     final sorted = [...entries]
       ..sort((a, b) {
@@ -79,17 +201,24 @@ class FeeEngine {
     final s = FeeState();
     for (final e in sorted) {
       switch (e.type) {
+        case kLtPlanTerm:
+          s.termMonthsTotal += e.termMonths;
+          s.termGross += e.termMonths * e.cyclePrice;
+          s.termDiscountTotal += e.discount;
+          break;
         case kLtPayment:
           // Money + any discount given on it both buy cycle value; discounts
           // never count as money collected (Collections sums paidAmount only).
+          s.realizedPlanDiscount += e.planDiscount;
           s.credit += e.paidAmount + e.discount;
+          s.creditMoney += e.paidAmount;
           final p = e.cyclePrice;
           if (p > 0) {
             while (s.credit >= p - 0.004) {
-              s.credit -= p;
-              s.monthsCovered += 1;
+              _consumeCycle(s, p);
             }
             if (s.credit < 0.005) s.credit = 0;
+            if (s.creditMoney < 0.005) s.creditMoney = 0;
           }
           break;
         case kLtAdmission:
@@ -100,6 +229,12 @@ class FeeEngine {
           s.credit -= e.cyclePrice;
           if (s.credit < 0) s.credit = 0;
           s.monthsCovered += 1;
+          s.coveredValue += e.cyclePrice;
+          if (s.creditMoney >= e.cyclePrice - 0.004) {
+            s.creditMoney -= e.cyclePrice;
+            s.monthsCoveredMoney += 1;
+          }
+          if (s.creditMoney < 0) s.creditMoney = 0;
           break;
         case kLtPtPayment:
           s.ptPaid += e.paidAmount;
@@ -111,34 +246,84 @@ class FeeEngine {
     return s;
   }
 
-  /// Apply a fresh payment at write-time. [amount] is the cash received;
-  /// [discount] is extra value given free (never counts as money collected).
-  /// Allocation order: admission fee -> cycles (oldest first, then advance
-  /// cycles) -> credit pool. Discount buys cycle value only.
+  /// Apply a payment according to the flowchart:
+  /// 1. If admission fee is levied and unpaid -> deduct admission fee.
+  /// 2. If settling advance payments -> advance fees are adjusted.
+  /// 3. Calculate totalCourseFees = monthlyFees * planMonths - totalDiscount.
+  /// 4. amountRemaining = leftOutSubmittedFee - totalCourseFees.
+  /// 5. amountRemaining > 0 -> advance adjusted into credit pool for future cycles.
+  /// 6. amountRemaining == 0 -> exact paid, 0 due.
+  /// 7. amountRemaining < 0 -> partial paid, remaining is due.
   static PaymentSplit applyPayment({
     required FeeState state,
     required double amount,
     required double cyclePrice,
     required double admissionFeeRemaining,
-    double discount = 0,
+    bool isAdmissionFeeLevied = false,
+    bool isAdmissionFeePaid = true,
+    int planMonths = 1,
+    String planDiscountType = '',
+    double planDiscountValue = 0,
+    double manualDiscount = 0,
+    double discount = 0, // legacy parameter support
   }) {
     var left = amount;
     var toAdmission = 0.0;
-    if (admissionFeeRemaining > 0 && left > 0) {
-      toAdmission =
-          left >= admissionFeeRemaining ? admissionFeeRemaining : left;
+
+    // Step 1: Admission fee check & deduction
+    if (isAdmissionFeeLevied && !isAdmissionFeePaid && admissionFeeRemaining > 0 && left > 0) {
+      toAdmission = left >= admissionFeeRemaining ? admissionFeeRemaining : left;
       state.admissionFeePaidAmount += toAdmission;
       left -= toAdmission;
     }
-    state.credit += left + discount;
+
+    // Step 2 & 3: Total discount & total course fees
+    final effectiveManual = manualDiscount > 0 ? manualDiscount : discount;
+    final calc = calculatePlanFee(
+      monthlyFee: cyclePrice,
+      planMonths: planMonths,
+      discountType: planDiscountType,
+      discountValue: planDiscountValue,
+      manualDiscount: effectiveManual,
+    );
+
+    // Plan discount capping:
+    // If a term is active, realize plan discount only up to the term's unrealized remainder.
+    final double planDiscountToRealize;
+    if (state.termMonthsTotal > 0) {
+      final unrealized = (state.termDiscountTotal - state.realizedPlanDiscount).clamp(0.0, double.infinity);
+      planDiscountToRealize = calc.multipleMonthsDiscount.clamp(0.0, unrealized);
+      state.realizedPlanDiscount += planDiscountToRealize;
+    } else {
+      planDiscountToRealize = calc.multipleMonthsDiscount;
+    }
+    final totalDiscountToCredit = planDiscountToRealize + calc.manualDiscount;
+
+    // Step 4: Add left-out submitted fee + total discount to credit pool
+    final available = left + totalDiscountToCredit;
+    state.credit += available;
+    state.creditMoney += left;
+
+    // Step 5: Convert credit pool to covered cycles
     if (cyclePrice > 0) {
       while (state.credit >= cyclePrice - 0.004) {
-        state.credit -= cyclePrice;
-        state.monthsCovered += 1;
+        _consumeCycle(state, cyclePrice);
       }
       if (state.credit < 0.005) state.credit = 0;
+      if (state.creditMoney < 0.005) state.creditMoney = 0;
     }
-    return PaymentSplit(toAdmission: toAdmission, toPlan: left);
+
+    final amountRemaining = left - calc.totalCourseFees;
+
+    return PaymentSplit(
+      toAdmission: toAdmission,
+      toPlan: left,
+      multipleMonthsDiscount: planDiscountToRealize,
+      manualDiscount: calc.manualDiscount,
+      totalDiscount: totalDiscountToCredit,
+      totalCourseFees: calc.totalCourseFees,
+      amountRemaining: amountRemaining,
+    );
   }
 
   /// Auto credit-consume loop: when a cycle price change leaves the credit
@@ -148,11 +333,11 @@ class FeeEngine {
     if (cyclePrice <= 0) return 0;
     var n = 0;
     while (state.credit >= cyclePrice - 0.004) {
-      state.credit -= cyclePrice;
-      state.monthsCovered += 1;
+      _consumeCycle(state, cyclePrice);
       n++;
     }
     if (state.credit < 0.005) state.credit = 0;
+    if (state.creditMoney < 0.005) state.creditMoney = 0;
     return n;
   }
 
@@ -168,25 +353,31 @@ class FeeEngine {
     required DateTime today,
   }) {
     final t = dateOnly(today);
-    final cyclesStarted =
-        dateOnly(admissionDate).isAfter(t) ? 0 : monthDiff(admissionDate, t) + 1;
-    final uncovered =
-        (cyclesStarted - state.monthsCovered).clamp(0, 1 << 31);
-    var feeDue = uncovered * cyclePrice - state.credit;
-    if (feeDue < 0) feeDue = 0;
+    final cyclesStartedCount = cyclesStarted(admissionDate, t);
+
+    final double feeDue;
+    if (state.termMonthsTotal > 0) {
+      final earmark = (state.termDiscountTotal - state.realizedPlanDiscount).clamp(0.0, double.infinity);
+      final postTermCycles = (cyclesStartedCount - state.termMonthsTotal).clamp(0, 1 << 31);
+      final obligation = state.termGross - earmark + postTermCycles * cyclePrice;
+      final rawFeeDue = obligation - state.coveredValue - state.credit;
+      feeDue = rawFeeDue > 0 ? rawFeeDue : 0.0;
+    } else {
+      final uncovered = (cyclesStartedCount - state.monthsCovered).clamp(0, 1 << 31);
+      final rawFeeDue = uncovered * cyclePrice - state.credit;
+      feeDue = rawFeeDue > 0 ? rawFeeDue : 0.0;
+    }
+
     final admissionDue = admissionFeeEnabled
         ? (admissionFeeAmount - state.admissionFeePaidAmount)
             .clamp(0.0, double.infinity)
         : 0.0;
     final paidTill = addMonths(admissionDate, state.monthsCovered);
     final daysLeft = daysBetween(t, paidTill);
-    final advance = feeDue <= 0
-        ? (state.monthsCovered - cyclesStarted).clamp(0, 1 << 31) * cyclePrice +
-            state.credit
-        : 0.0;
+    final advance = feeDue <= 0 ? state.creditMoney : 0.0;
     return FeeStatus(
       cyclePrice: cyclePrice,
-      cyclesStarted: cyclesStarted,
+      cyclesStarted: cyclesStartedCount,
       monthsCovered: state.monthsCovered,
       credit: state.credit,
       feeDue: feeDue,
@@ -198,12 +389,6 @@ class FeeEngine {
       advance: advance.toDouble(),
     );
   }
-}
-
-class PaymentSplit {
-  final double toAdmission;
-  final double toPlan;
-  const PaymentSplit({required this.toAdmission, required this.toPlan});
 }
 
 /// PT fees are a RECHARGE, fully separate from course/plan fees:
@@ -252,3 +437,6 @@ const kLtPayment = 'PAYMENT';
 const kLtAdmission = 'ADMISSION_FEE_PAID';
 const kLtAutoCredit = 'AUTO_CREDIT_ADJUST';
 const kLtPtPayment = 'PT_PAYMENT';
+const kLtPlanTerm = 'PLAN_TERM';
+
+

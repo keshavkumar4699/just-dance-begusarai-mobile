@@ -1,5 +1,5 @@
 // Just Dance — end-to-end smoke test on a real device.
-// Covers: catalog setup (fee, GST, course, batch with duration, timing,
+// Covers: catalog setup (fee, course, batch with duration, timing,
 // plan), add member -> welcome popup -> home card, detail + payment,
 // roll-call attendance, collections, home search.
 //
@@ -36,13 +36,6 @@ void main() {
     await tester.tap(find.text('Save').first);
     await tester.pumpAndSettle();
 
-    // GST: GSTIN + 18%
-    await tester.enterText(
-        find.widgetWithText(TextField, 'GSTIN (optional)'), 'GSTIN123');
-    await tester.enterText(find.widgetWithText(TextField, '0'), '18');
-    await tester.tap(find.text('Save').at(1));
-    await tester.pumpAndSettle();
-
     // Add course
     await tester.tap(find.text('Add Course'));
     await tester.pumpAndSettle();
@@ -53,35 +46,22 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Dance Studio'), findsOneWidget);
 
-    // Add batch (dedicated section, with days + duration)
-    await tester.tap(find.text('Add Batch'));
+    // Add interest
+    await tester.tap(find.text('Add Interest').first);
     await tester.pumpAndSettle();
     await tester.enterText(
-        find.widgetWithText(TextField, 'e.g. Weekend Batch'), 'Weekend');
-    await tester.enterText(
-        find.widgetWithText(TextField, 'e.g. Mon–Fri or Sat–Sun'), 'Sat–Sun');
-    await tester.enterText(
-        find.widgetWithText(TextField, 'e.g. 1 hour or 2 hours'), '2 hours');
+        find.widgetWithText(TextField, 'e.g. Hip Hop, Kathak, Salsa, Beat Boxing'), 'Hip Hop');
     await tester.tap(find.text('Save').last);
     await tester.pumpAndSettle();
-    expect(find.text('Weekend'), findsWidgets);
-    expect(find.textContaining('2 hours'), findsWidgets);
-
-    // Add timing (dedicated Timings section; batch pre-selected)
-    await tester.tap(find.text('Add Timing'));
-    await tester.pumpAndSettle();
-    await tester.enterText(
-        find.widgetWithText(TextField, 'e.g. Morning'), 'Evening');
-    await tester.tap(find.text('Save').last);
-    await tester.pumpAndSettle();
+    expect(find.text('Hip Hop'), findsOneWidget);
 
     // Add plan
     await tester.tap(find.text('Add Plan'));
     await tester.pumpAndSettle();
     await tester.enterText(
-        find.widgetWithText(TextField, 'e.g. Quarterly'), 'Monthly');
+        find.widgetWithText(TextField, 'e.g. Quarterly Plan'), 'Monthly');
     await tester.enterText(
-        find.widgetWithText(TextField, 'e.g. 1, 3, 12'), '1');
+        find.widgetWithText(TextField, 'e.g. 3'), '1');
     await tester.tap(find.text('Save').last);
     await tester.pumpAndSettle();
     expect(find.text('Monthly'), findsWidgets);

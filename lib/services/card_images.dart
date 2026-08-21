@@ -202,13 +202,27 @@ class CardImages {
         if (e.isPrimary) primary = e;
       }
     }
+    final bLabel =
+        primary == null ? '' : AppStore.batchShortLabel(primary.batchId);
+    final interestNames = <String>[];
+    if (primary != null && primary.interests.isNotEmpty) {
+      final ids = primary.interests
+          .split(',')
+          .map((e) => int.tryParse(e.trim()))
+          .whereType<int>();
+      for (final id in ids) {
+        final ci = store.interestById(id);
+        if (ci != null) interestNames.add(ci.name);
+      }
+    }
     final courseName =
         primary == null ? '—' : (store.courseById(primary.courseId)?.name ?? '—');
-    final batchName = primary == null
-        ? null
-        : store.batchById(primary.batchId)?.name;
-    field('Course',
-        [courseName, if (batchName != null) batchName].join('  ·  '));
+    final courseDisplay = [
+      courseName,
+      if (bLabel.isNotEmpty) bLabel,
+      if (interestNames.isNotEmpty) interestNames.join(', '),
+    ].join('  ·  ');
+    field('Course', courseDisplay);
     final plan = store.planById(s.planId);
     field('Plan  ·  Valid Till',
         '${plan?.name ?? '—'}  ·  ${fmtDate(status.paidTill, forceYear: true)}');
@@ -305,10 +319,13 @@ class CardImages {
     c.drawRect(ui.Rect.fromLTWH(96, y, w - 192, 1), ui.Paint()..color = hairline);
     y += 34;
 
-    if (admissionFee > 0) row('Admission fee', fmtMoney(admissionFee));
-    row('Plan price', fmtMoney(planPrice));
-    if (discount > 0) row('Discount', '- ${fmtMoney(discount)}', color: const ui.Color(0xFF46A758));
-    row('Paid', fmtMoney(paid), bold: true, color: gold);
+    final netPlan = (planPrice - discount).clamp(0.0, double.infinity);
+    final netTotal = netPlan + admissionFee;
+    if (admissionFee > 0) {
+      row('Admission fee', fmtMoney(admissionFee));
+      if (netPlan > 0) row('Course fee', fmtMoney(netPlan));
+    }
+    row('Total', fmtMoney(netTotal), bold: true, color: gold);
     c.drawRect(ui.Rect.fromLTWH(96, y, w - 192, 1), ui.Paint()..color = hairline);
     y += 34;
     row(balance > 0 ? 'Balance due' : 'Balance',

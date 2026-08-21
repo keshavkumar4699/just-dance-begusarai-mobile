@@ -1,10 +1,11 @@
-/// Just Dance — "Schedule": admission fee, GST, personal training defaults,
-/// courses/batches/timings and plans — one grouped section. Full CRUD with
+/// Just Dance — "Schedule": admission fee, personal training defaults,
+/// courses/interests and plans — one grouped section. Full CRUD with
 /// delete-protection for items assigned to students.
 library;
 
 import 'package:flutter/material.dart';
 
+import '../../core/constants.dart';
 import '../../core/motion.dart';
 import '../../core/theme.dart';
 import '../../core/utils.dart';
@@ -29,15 +30,11 @@ class CatalogScreen extends StatelessWidget {
             children: [
               _admissionFeeCard(context, c),
               const SizedBox(height: 16),
-              _gstCard(context, c),
-              const SizedBox(height: 16),
               _ptDefaultsCard(context, c),
               const SizedBox(height: 16),
               _coursesSection(context, c),
               const SizedBox(height: 16),
-              _batchesSection(context, c),
-              const SizedBox(height: 16),
-              _timingsSection(context, c),
+              _interestsSection(context, c),
               const SizedBox(height: 16),
               _plansSection(context, c),
             ],
@@ -102,72 +99,6 @@ class CatalogScreen extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text('Charged once to every new member when the toggle is ON.',
-              style: TextStyle(color: c.textMuted, fontSize: 11.5)),
-        ],
-      ),
-    );
-  }
-
-  // ---------------- GST ----------------
-
-  Widget _gstCard(BuildContext context, AppColors c) {
-    final gstin =
-        TextEditingController(text: store.gstin);
-    final rate = TextEditingController(
-        text: store.gstRate == 0 ? '' : store.gstRate.toStringAsFixed(0));
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: c.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: c.hairline),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SectionLabel('GST (Invoices)'),
-          const SizedBox(height: 8),
-          TextField(
-            controller: gstin,
-            textCapitalization: TextCapitalization.characters,
-            decoration: const InputDecoration(
-                hintText: 'GSTIN (optional)',
-                prefixText: 'GSTIN: ',
-                prefixStyle: TextStyle(color: Color(0xFF8B8B93))),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: rate,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                      hintText: '0',
-                      prefixText: 'GST % ',
-                      prefixStyle: TextStyle(color: Color(0xFF8B8B93))),
-                ),
-              ),
-              const SizedBox(width: 10),
-              GoldButton('Save', expand: false, onTap: () async {
-                final r = double.tryParse(rate.text.trim()) ?? 0;
-                if (r < 0 || r > 100) {
-                  showSnack(context, 'GST % must be between 0 and 100',
-                      duration: kSnackWarn);
-                  return;
-                }
-                await store.setGstInfo(gstin: gstin.text.trim(), rate: r);
-                if (context.mounted) {
-                  showSnack(context,
-                      r > 0 ? 'GST ${r.toStringAsFixed(0)}% saved' : 'GST turned off',
-                      duration: kSnackSuccess);
-                }
-              }),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-              'GSTIN + rate appear on the PDF invoice sent to members. 0% turns GST off.',
               style: TextStyle(color: c.textMuted, fontSize: 11.5)),
         ],
       ),
@@ -269,7 +200,7 @@ class CatalogScreen extends StatelessWidget {
     );
   }
 
-  // ---------------- courses / batches / timings ----------------
+  // ---------------- courses ----------------
 
   Widget _coursesSection(BuildContext context, AppColors c) {
     return Container(
@@ -307,8 +238,6 @@ class CatalogScreen extends StatelessWidget {
       );
 
   Widget _courseTile(BuildContext context, AppColors c, Course course) {
-    final courseBatches =
-        store.batches.where((b) => b.courseId == course.id).toList();
     return Container(
       margin: const EdgeInsets.only(top: 8),
       decoration: BoxDecoration(
@@ -338,242 +267,123 @@ class CatalogScreen extends StatelessWidget {
           ],
         ),
         children: [
-          for (final b in courseBatches) _batchTile(context, c, b),
+          _fixedBatchTile(c, kBatchWeekendFullLabel),
+          _fixedBatchTile(c, kBatchWeekdaysFullLabel),
         ],
       ),
     );
   }
 
-  /// All batches across courses, with add/edit/delete + student counts.
-  Widget _batchesSection(BuildContext context, AppColors c) {
-    final grouped = <int, List<Batch>>{};
-    for (final b in store.batches) {
-      grouped.putIfAbsent(b.courseId, () => []).add(b);
-    }
-    final courseIds = grouped.keys.toList()
-      ..sort((a, b) => (store.courseById(a)?.name ?? '')
-          .compareTo(store.courseById(b)?.name ?? ''));
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: c.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: c.hairline),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SectionLabel('Batches',
-              trailing: _addBtn(context, c, 'Batch',
-                  () => _batchDialog(context, store.courses.isEmpty ? 0 : store.courses.first.id, null))),
-          if (store.batches.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              child: Text(
-                  store.courses.isEmpty
-                      ? 'Create a course first — batches belong to a course.'
-                      : 'No batches yet — add a batch like "Weekend (Sat–Sun) · 2 hours".',
-                  style: TextStyle(color: c.textMuted, fontSize: 12.5)),
-            ),
-          for (final cid in courseIds) ...[
-            Padding(
-              padding: const EdgeInsets.only(top: 10, bottom: 4),
-              child: Text(
-                  '${store.courseById(cid)?.name ?? 'Course'} (${grouped[cid]!.length})',
-                  style: TextStyle(
-                      color: c.textMuted,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.6)),
-            ),
-            for (final b in grouped[cid]!)
-              Container(
-                margin: const EdgeInsets.only(top: 6),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                decoration: BoxDecoration(
-                  color: c.surface2,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(b.name,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w600, fontSize: 13)),
-                          Text(
-                            [
-                              if (b.daysInfo.isNotEmpty) b.daysInfo,
-                              if (b.duration.isNotEmpty) b.duration,
-                              _batchStudents(b),
-                            ].where((e) => e.isNotEmpty).join(' · '),
-                            style: TextStyle(
-                                color: c.textMuted, fontSize: 11.5),
-                          ),
-                        ],
-                      ),
-                    ),
-                    _editIcon(context, c, () => _batchDialog(context, b.courseId, b)),
-                    _deleteIcon(context, c, () async {
-                      final err = await store.deleteBatch(b);
-                      if (err != null && context.mounted) {
-                        _blockedDialog(context, 'batch');
-                      }
-                    }),
-                  ],
-                ),
-              ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  String _batchStudents(Batch b) {
-    final n = store.studentCourses.where((e) => e.batchId == b.id).length;
-    return '$n student${n == 1 ? '' : 's'}';
-  }
-
-  /// All timings across batches, with add/edit/delete.
-  Widget _timingsSection(BuildContext context, AppColors c) {
-    final grouped = <int, List<BatchTiming>>{};
-    for (final t in store.timings) {
-      grouped.putIfAbsent(t.batchId, () => []).add(t);
-    }
-    final batchIds = grouped.keys.toList()
-      ..sort((a, b) => (store.batchById(a)?.name ?? '')
-          .compareTo(store.batchById(b)?.name ?? ''));
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: c.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: c.hairline),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SectionLabel('Timings',
-              trailing: _addBtn(context, c, 'Timing',
-                  () => _timingDialog(context, store.batches.isEmpty ? 0 : store.batches.first.id, null))),
-          if (store.timings.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              child: Text(
-                  store.batches.isEmpty
-                      ? 'Create a batch first — timings belong to a batch.'
-                      : 'No timings yet — add batch timings like "Morning · 06:00–07:00".',
-                  style: TextStyle(color: c.textMuted, fontSize: 12.5)),
-            ),
-          for (final bid in batchIds) ...[
-            Padding(
-              padding: const EdgeInsets.only(top: 10, bottom: 4),
-              child: Text(
-                  '${store.batchById(bid)?.name ?? 'Batch'} (${store.courseById(store.batchById(bid)?.courseId ?? 0)?.name ?? ''})',
-                  style: TextStyle(
-                      color: c.textMuted,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.6)),
-            ),
-            for (final t in grouped[bid]!)
-              Container(
-                margin: const EdgeInsets.only(top: 6),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                decoration: BoxDecoration(
-                  color: c.surface2,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                          '${t.label}${t.startTime.isEmpty ? '' : ' · ${t.startTime}–${t.endTime}'}',
-                          style: const TextStyle(
-                              fontWeight: FontWeight.w600, fontSize: 13)),
-                    ),
-                    _editIcon(context, c,
-                        () => _timingDialog(context, bid, t)),
-                    _deleteIcon(context, c, () async {
-                      final err = await store.deleteTiming(t);
-                      if (err != null && context.mounted) {
-                        _blockedDialog(context, 'timing');
-                      }
-                    }),
-                  ],
-                ),
-              ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _batchTile(BuildContext context, AppColors c, Batch batch) {
-    final batchTimings =
-        store.timings.where((t) => t.batchId == batch.id).toList();
-    final meta = [
-      if (batch.daysInfo.isNotEmpty) batch.daysInfo,
-      if (batch.duration.isNotEmpty) batch.duration,
-    ].join(' · ');
+  Widget _fixedBatchTile(AppColors c, String label) {
     return Container(
       margin: const EdgeInsets.only(top: 6),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: c.surface,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(color: c.hairline),
       ),
-      child: ExpansionTile(
-        tilePadding: const EdgeInsets.symmetric(horizontal: 12),
-        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-        iconColor: c.gold,
-        collapsedIconColor: c.textMuted,
-        title: Text(batch.name,
-            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-        subtitle: meta.isEmpty
-            ? null
-            : Text(meta,
-                style: TextStyle(color: c.textMuted, fontSize: 11.5)),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _editIcon(context, c, () => _batchDialog(context, batch.courseId, batch)),
-            _deleteIcon(context, c, () async {
-              final err = await store.deleteBatch(batch);
-              if (err != null && context.mounted) {
-                _blockedDialog(context, 'batch');
-              }
-            }),
-            Icon(Icons.expand_more, color: c.textMuted, size: 18),
-          ],
-        ),
+      child: Text(label,
+          style: TextStyle(color: c.textMuted, fontSize: 12.5, fontWeight: FontWeight.w500)),
+    );
+  }
+
+  // ---------------- interests ----------------
+
+  Widget _interestsSection(BuildContext context, AppColors c) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: c.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: c.hairline),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (final t in batchTimings)
-            Container(
-              margin: const EdgeInsets.only(top: 6),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: c.surface2,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                        '${t.label}${t.startTime.isEmpty ? '' : ' · ${t.startTime}–${t.endTime}'}',
-                        style: const TextStyle(fontSize: 12.5)),
-                  ),
-                ],
-              ),
+          const SectionLabel('Course Interests'),
+          if (store.courses.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Text('Create a course first to add interests.',
+                  style: TextStyle(color: c.textMuted, fontSize: 12.5)),
             ),
+          for (final course in store.courses) ...[
+            const SizedBox(height: 10),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(course.name,
+                    style: TextStyle(
+                        color: c.text,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13)),
+                TextButton.icon(
+                  onPressed: () => _addInterestDialog(context, course.id),
+                  icon: Icon(Icons.add, size: 15, color: c.gold),
+                  label: Text('Add Interest',
+                      style: TextStyle(color: c.gold, fontSize: 12)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Builder(builder: (_) {
+              final courseInterests = store.interestsOf(course.id);
+              if (courseInterests.isEmpty) {
+                return Text('No interests added yet (e.g. Hip Hop, Kathak).',
+                    style: TextStyle(color: c.textMuted, fontSize: 11.5));
+              }
+              return Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final ci in courseInterests)
+                    Chip(
+                      label: Text(ci.name, style: const TextStyle(fontSize: 12)),
+                      backgroundColor: c.surface2,
+                      side: BorderSide(color: c.hairline),
+                      deleteIcon: Icon(Icons.close, size: 14, color: c.expired),
+                      onDeleted: () async {
+                        final err = await store.deleteCourseInterest(ci);
+                        if (err != null && context.mounted) {
+                          _blockedDialog(context, 'interest');
+                        }
+                      },
+                    ),
+                ],
+              );
+            }),
+          ],
         ],
+      ),
+    );
+  }
+
+  Future<void> _addInterestDialog(BuildContext context, int courseId) async {
+    final controller = TextEditingController();
+    await showAppSheet(
+      context,
+      _SheetFrame(
+        title: 'Add Interest',
+        children: [
+          const FieldLabel('Interest Name'),
+          TextField(
+            controller: controller,
+            decoration: const InputDecoration(
+                hintText: 'e.g. Hip Hop, Kathak, Salsa, Beat Boxing'),
+          ),
+        ],
+        onSave: () async {
+          final text = controller.text.trim();
+          if (text.isEmpty) {
+            showSnack(context, 'Interest name is required', duration: kSnackWarn);
+            return;
+          }
+          await store.saveCourseInterest(
+              CourseInterest(courseId: courseId, name: text));
+          if (context.mounted) Navigator.pop(context);
+        },
       ),
     );
   }
@@ -669,158 +479,6 @@ class CatalogScreen extends StatelessWidget {
     );
   }
 
-  Future<void> _batchDialog(
-      BuildContext context, int courseId, Batch? existing) async {
-    final name = TextEditingController(text: existing?.name ?? '');
-    final days = TextEditingController(text: existing?.daysInfo ?? '');
-    final duration = TextEditingController(text: existing?.duration ?? '');
-    var selectedCourse = existing?.courseId ?? courseId;
-    await showAppSheet(
-      context,
-      StatefulBuilder(
-        builder: (context, setSheet) => _SheetFrame(
-          title: existing == null ? 'Add Batch' : 'Edit Batch',
-          children: [
-            const FieldLabel('Course'),
-            AppDropdown<int>(
-              value: selectedCourse == 0 ? null : selectedCourse,
-              hint: store.courses.isEmpty ? 'Create a course first' : 'Select course',
-              items: [
-                for (final course in store.courses)
-                  DropdownMenuItem(
-                      value: course.id,
-                      child: Text(
-                          '${course.name} · ${fmtMoney(course.fee)}/mo',
-                          overflow: TextOverflow.ellipsis))
-              ],
-              onChanged: (v) => setSheet(() => selectedCourse = v ?? 0),
-            ),
-            const FieldLabel('Batch name'),
-            TextField(
-                controller: name,
-                decoration: const InputDecoration(
-                    hintText: 'e.g. Weekend Batch')),
-            const FieldLabel('Days info (optional)'),
-            TextField(
-                controller: days,
-                decoration: const InputDecoration(
-                    hintText: 'e.g. Mon–Fri or Sat–Sun')),
-            const FieldLabel('Duration (optional)'),
-            TextField(
-                controller: duration,
-                decoration: const InputDecoration(
-                    hintText: 'e.g. 1 hour or 2 hours')),
-          ],
-          onSave: () async {
-            if (store.courses.isEmpty) {
-              showSnack(context, 'Create a course first', duration: kSnackWarn);
-              return;
-            }
-            if (selectedCourse == 0) {
-              showSnack(context, 'Select a course', duration: kSnackWarn);
-              return;
-            }
-            if (name.text.trim().isEmpty) {
-              showSnack(context, 'Name is required', duration: kSnackWarn);
-              return;
-            }
-            await store.saveBatch(Batch(
-                id: existing?.id ?? 0,
-                courseId: selectedCourse,
-                name: name.text.trim(),
-                daysInfo: days.text.trim(),
-                duration: duration.text.trim()));
-            if (context.mounted) Navigator.pop(context);
-          },
-        ),
-      ),
-    );
-  }
-
-  Future<void> _timingDialog(
-      BuildContext context, int batchId, BatchTiming? existing) async {
-    final label = TextEditingController(text: existing?.label ?? '');
-    final start = TextEditingController(text: existing?.startTime ?? '');
-    final end = TextEditingController(text: existing?.endTime ?? '');
-    var selectedBatch = existing?.batchId ?? batchId;
-
-    Future<void> pick(TextEditingController ctrl) async {
-      final t = await showTimePicker(
-          context: context, initialTime: const TimeOfDay(hour: 6, minute: 0));
-      if (t != null) {
-        ctrl.text =
-            '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
-      }
-    }
-
-    await showAppSheet(
-      context,
-      StatefulBuilder(
-        builder: (context, setSheet) => _SheetFrame(
-          title: existing == null ? 'Add Timing' : 'Edit Timing',
-          children: [
-            const FieldLabel('Batch'),
-            AppDropdown<int>(
-              value: selectedBatch == 0 ? null : selectedBatch,
-              hint: store.batches.isEmpty ? 'Create a batch first' : 'Select batch',
-              items: [
-                for (final b in store.batches)
-                  DropdownMenuItem(
-                      value: b.id,
-                      child: Text(
-                          '${store.courseById(b.courseId)?.name ?? ''} — ${b.name}',
-                          overflow: TextOverflow.ellipsis))
-              ],
-              onChanged: (v) => setSheet(() => selectedBatch = v ?? 0),
-            ),
-            const FieldLabel('Label'),
-            TextField(
-                controller: label,
-                decoration: const InputDecoration(hintText: 'e.g. Morning')),
-            const FieldLabel('Start time'),
-            _timeField(context, start, () => pick(start)),
-            const FieldLabel('End time'),
-            _timeField(context, end, () => pick(end)),
-          ],
-          onSave: () async {
-            if (store.batches.isEmpty) {
-              showSnack(context, 'Create a batch first', duration: kSnackWarn);
-              return;
-            }
-            if (selectedBatch == 0) {
-              showSnack(context, 'Select a batch', duration: kSnackWarn);
-              return;
-            }
-            if (label.text.trim().isEmpty) {
-              showSnack(context, 'Label is required', duration: kSnackWarn);
-              return;
-            }
-            await store.saveTiming(BatchTiming(
-                id: existing?.id ?? 0,
-                batchId: selectedBatch,
-                label: label.text.trim(),
-                startTime: start.text.trim(),
-                endTime: end.text.trim()));
-            if (context.mounted) Navigator.pop(context);
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _timeField(BuildContext context, TextEditingController ctrl,
-          VoidCallback onTap) =>
-      Pressable(
-        onTap: onTap,
-        child: IgnorePointer(
-          child: TextField(
-            controller: ctrl,
-            decoration:
-                const InputDecoration(hintText: 'HH:MM (tap to pick)'),
-          ),
-        ),
-      );
-
   // ---------------- plans ----------------
 
   Widget _plansSection(BuildContext context, AppColors c) {
@@ -892,6 +550,7 @@ class CatalogScreen extends StatelessWidget {
             ? ''
             : existing.discountValue.toStringAsFixed(0));
     var isPercent = existing?.discountType == 'percent';
+
     await showAppSheet(
       context,
       StatefulBuilder(
@@ -901,22 +560,25 @@ class CatalogScreen extends StatelessWidget {
             const FieldLabel('Plan name'),
             TextField(
                 controller: name,
-                decoration: const InputDecoration(hintText: 'e.g. Quarterly')),
+                decoration:
+                    const InputDecoration(hintText: 'e.g. Quarterly Plan')),
             const FieldLabel('Duration (months)'),
             TextField(
                 controller: months,
                 keyboardType: TextInputType.number,
-                decoration: const InputDecoration(hintText: 'e.g. 1, 3, 12')),
+                decoration: const InputDecoration(hintText: 'e.g. 3')),
             const FieldLabel('Discount (optional)'),
             Row(
               children: [
                 Expanded(
                   child: TextField(
-                      controller: discount,
-                      keyboardType: TextInputType.number,
-                      decoration: InputDecoration(
-                          hintText: '0',
-                          prefixText: isPercent ? '' : '₹ ')),
+                    controller: discount,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      hintText: '0',
+                      prefixText: isPercent ? '' : '₹ ',
+                    ),
+                  ),
                 ),
                 const SizedBox(width: 10),
                 ToggleButtons(
@@ -940,23 +602,18 @@ class CatalogScreen extends StatelessWidget {
             }
             final m = int.tryParse(months.text.trim()) ?? 0;
             if (m <= 0) {
-              showSnack(context, 'Duration must be at least 1 month', duration: kSnackWarn);
-              return;
-            }
-            final d = double.tryParse(discount.text.trim()) ?? 0;
-            if (d < 0 || (isPercent && d > 100)) {
-              showSnack(context, isPercent
-                  ? 'Percent cannot exceed 100'
-                  : 'Discount cannot be negative',
+              showSnack(context, 'Duration must be at least 1 month',
                   duration: kSnackWarn);
               return;
             }
+            final disc = double.tryParse(discount.text.trim()) ?? 0;
             await store.savePlan(Plan(
-                id: existing?.id ?? 0,
-                name: name.text.trim(),
-                months: m,
-                discountType: d > 0 ? (isPercent ? 'percent' : 'rs') : '',
-                discountValue: d));
+              id: existing?.id ?? 0,
+              name: name.text.trim(),
+              months: m,
+              discountType: disc > 0 ? (isPercent ? 'percent' : 'rs') : '',
+              discountValue: disc > 0 ? disc : 0,
+            ));
             if (context.mounted) Navigator.pop(context);
           },
         ),
@@ -965,7 +622,6 @@ class CatalogScreen extends StatelessWidget {
   }
 }
 
-/// Shared sheet frame for the small catalog dialogs.
 class _SheetFrame extends StatelessWidget {
   final String title;
   final List<Widget> children;
@@ -977,27 +633,39 @@ class _SheetFrame extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Center(
-              child: Container(
-                  width: 36,
-                  height: 4,
-                  decoration: BoxDecoration(
-                      color: c.hairline,
-                      borderRadius: BorderRadius.circular(2))),
-            ),
-            const SizedBox(height: 12),
-            Text(title, style: Theme.of(context).textTheme.titleMedium),
-            ...children,
-            const SizedBox(height: 18),
-            GoldButton('Save', icon: Icons.check, onTap: onSave),
-          ],
-        ),
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 16,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                  color: c.hairline, borderRadius: BorderRadius.circular(2))),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: Text(title,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w700, fontSize: 16)),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ...children,
+          const SizedBox(height: 18),
+          GoldButton('Save', onTap: onSave),
+        ],
       ),
     );
   }

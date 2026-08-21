@@ -27,9 +27,12 @@ class Student {
   int? planId;
   bool admissionFeeEnabled;
   bool admissionFeePaid;
+  double admissionFeeAmount; // snapshot of admission fee at admission (0 -> fallback to global)
   int monthsCovered; // full monthly cycles paid
+  int monthsCoveredMoney; // full monthly cycles paid with real money
   double cycleBalance; // remaining due on an open partial cycle (derived)
   double credit; // advance pool
+  double creditMoney; // advance money pool
   DateTime? lastVisitDate;
   bool isBlocked;
   // Personal training (recharge-based)
@@ -70,9 +73,12 @@ class Student {
     this.planId,
     this.admissionFeeEnabled = true,
     this.admissionFeePaid = false,
+    this.admissionFeeAmount = 0,
     this.monthsCovered = 0,
+    this.monthsCoveredMoney = 0,
     this.cycleBalance = 0,
     this.credit = 0,
+    this.creditMoney = 0,
     this.lastVisitDate,
     this.isBlocked = false,
     this.ptEnabled = false,
@@ -116,9 +122,12 @@ class Student {
         'planId': planId,
         'admissionFeeEnabled': admissionFeeEnabled ? 1 : 0,
         'admissionFeePaid': admissionFeePaid ? 1 : 0,
+        'admissionFeeAmount': admissionFeeAmount,
         'monthsCovered': monthsCovered,
+        'monthsCoveredMoney': monthsCoveredMoney,
         'cycleBalance': cycleBalance,
         'credit': credit,
+        'creditMoney': creditMoney,
         'lastVisitDate': lastVisitDate?.toIso8601String(),
         'isBlocked': isBlocked ? 1 : 0,
         'ptEnabled': ptEnabled ? 1 : 0,
@@ -160,9 +169,12 @@ class Student {
         planId: m['planId'] as int?,
         admissionFeeEnabled: (m['admissionFeeEnabled'] as int? ?? 1) == 1,
         admissionFeePaid: (m['admissionFeePaid'] as int? ?? 0) == 1,
+        admissionFeeAmount: (m['admissionFeeAmount'] as num?)?.toDouble() ?? 0,
         monthsCovered: m['monthsCovered'] as int? ?? 0,
+        monthsCoveredMoney: m['monthsCoveredMoney'] as int? ?? 0,
         cycleBalance: (m['cycleBalance'] as num?)?.toDouble() ?? 0,
         credit: (m['credit'] as num?)?.toDouble() ?? 0,
+        creditMoney: (m['creditMoney'] as num?)?.toDouble() ?? 0,
         lastVisitDate: m['lastVisitDate'] != null
             ? DateTime.parse(m['lastVisitDate'] as String)
             : null,
@@ -204,48 +216,32 @@ class Course {
       );
 }
 
-class Batch {
+class CourseInterest {
   int id;
   int courseId;
   String name;
-  String daysInfo;
-  String duration; // e.g. "1 hour", "2 hours"
-  Batch({this.id = 0, this.courseId = 0, this.name = '', this.daysInfo = '', this.duration = ''});
+  DateTime createdAt;
+
+  CourseInterest({
+    this.id = 0,
+    this.courseId = 0,
+    this.name = '',
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? DateTime.now();
+
   Map<String, Object?> toMap() => {
         'id': id == 0 ? null : id,
         'courseId': courseId,
         'name': name,
-        'daysInfo': daysInfo,
-        'duration': duration
+        'createdAt': createdAt.toIso8601String(),
       };
-  factory Batch.fromMap(Map<String, Object?> m) => Batch(
-      id: m['id'] as int,
-      courseId: m['courseId'] as int,
-      name: m['name'] as String,
-      daysInfo: (m['daysInfo'] ?? '') as String,
-      duration: (m['duration'] ?? '') as String);
-}
 
-class BatchTiming {
-  int id;
-  int batchId;
-  String label;
-  String startTime; // "06:00"
-  String endTime; // "07:00"
-  BatchTiming({this.id = 0, this.batchId = 0, this.label = '', this.startTime = '', this.endTime = ''});
-  Map<String, Object?> toMap() => {
-        'id': id == 0 ? null : id,
-        'batchId': batchId,
-        'label': label,
-        'startTime': startTime,
-        'endTime': endTime
-      };
-  factory BatchTiming.fromMap(Map<String, Object?> m) => BatchTiming(
-      id: m['id'] as int,
-      batchId: m['batchId'] as int,
-      label: m['label'] as String,
-      startTime: (m['startTime'] ?? '') as String,
-      endTime: (m['endTime'] ?? '') as String);
+  factory CourseInterest.fromMap(Map<String, Object?> m) => CourseInterest(
+        id: m['id'] as int,
+        courseId: m['courseId'] as int,
+        name: (m['name'] ?? '') as String,
+        createdAt: DateTime.parse(m['createdAt'] as String),
+      );
 }
 
 class Plan {
@@ -272,23 +268,31 @@ class Plan {
 
 class StudentCourse {
   int id;
-  int studentId, courseId, batchId, timingId;
+  int studentId, courseId, batchId;
+  String interests; // CSV of interest IDs e.g. "1,3"
   bool isPrimary;
-  StudentCourse({this.id = 0, this.studentId = 0, this.courseId = 0, this.batchId = 0, this.timingId = 0, this.isPrimary = false});
+  StudentCourse({
+    this.id = 0,
+    this.studentId = 0,
+    this.courseId = 0,
+    this.batchId = 0,
+    this.interests = '',
+    this.isPrimary = false,
+  });
   Map<String, Object?> toMap() => {
         'id': id == 0 ? null : id,
         'studentId': studentId,
         'courseId': courseId,
         'batchId': batchId,
-        'timingId': timingId,
+        'interests': interests,
         'isPrimary': isPrimary ? 1 : 0
       };
   factory StudentCourse.fromMap(Map<String, Object?> m) => StudentCourse(
       id: m['id'] as int,
       studentId: m['studentId'] as int,
       courseId: m['courseId'] as int,
-      batchId: m['batchId'] as int,
-      timingId: m['timingId'] as int,
+      batchId: m['batchId'] as int? ?? 0,
+      interests: (m['interests'] ?? '') as String,
       isPrimary: (m['isPrimary'] as int? ?? 0) == 1);
 }
 
@@ -326,8 +330,10 @@ class LedgerEntry {
   double balanceOrCredit; // after: >0 baki, <0 advance, 0 settled
   String mode; // Cash | UPI | ''
   String note;
-  double cyclePrice; // snapshot of per-cycle price used (PAYMENT / AUTO_CREDIT_ADJUST)
-  double discount; // discount value applied inside this entry
+  double cyclePrice; // snapshot of per-cycle price used (PAYMENT / AUTO_CREDIT_ADJUST / PLAN_TERM)
+  double discount; // discount value applied inside this entry (or total plan discount on PLAN_TERM)
+  int termMonths; // snapshot of committed months for PLAN_TERM
+  double planDiscount; // snapshot of plan discount realized on PAYMENT / committed on PLAN_TERM
 
   LedgerEntry({
     this.id = 0,
@@ -342,6 +348,8 @@ class LedgerEntry {
     this.note = '',
     this.cyclePrice = 0,
     this.discount = 0,
+    this.termMonths = 0,
+    this.planDiscount = 0,
   }) : date = date ?? DateTime.now();
 
   Map<String, Object?> toMap() => {
@@ -357,6 +365,8 @@ class LedgerEntry {
         'note': note,
         'cyclePrice': cyclePrice,
         'discount': discount,
+        'termMonths': termMonths,
+        'planDiscount': planDiscount,
       };
   factory LedgerEntry.fromMap(Map<String, Object?> m) => LedgerEntry(
       id: m['id'] as int,
@@ -370,7 +380,9 @@ class LedgerEntry {
       mode: (m['mode'] ?? '') as String,
       note: (m['note'] ?? '') as String,
       cyclePrice: (m['cyclePrice'] as num?)?.toDouble() ?? 0,
-      discount: (m['discount'] as num?)?.toDouble() ?? 0);
+      discount: (m['discount'] as num?)?.toDouble() ?? 0,
+      termMonths: (m['termMonths'] as int? ?? 0),
+      planDiscount: (m['planDiscount'] as num?)?.toDouble() ?? 0);
 }
 
 /// Owner-editable studio profile (drives ID cards, invoices, templates).

@@ -1,8 +1,7 @@
 /// Just Dance — PDF invoice generation (pure Dart, offline).
 /// Two layouts: the COURSE/PLAN invoice (months allocated + valid till) and
 /// the PERSONAL TRAINING invoice (sessions allocated). Amounts use "Rs."
-/// instead of the rupee symbol; GST is computed from the studio rate and the
-/// GSTIN is printed on the invoice.
+/// instead of the rupee symbol.
 library;
 
 import 'dart:io';
@@ -18,15 +17,8 @@ import '../data/store.dart';
 
 /// Pure invoice math — unit-testable without rendering a PDF.
 class InvoiceMath {
-  static ({double taxable, double gst, double total}) calc({
-    required double gross,
-    required double discount,
-    required double gstRate,
-  }) {
-    final taxable = gross - discount;
-    final gst = gstRate > 0 ? taxable * gstRate / 100 : 0.0;
-    return (taxable: taxable, gst: gst, total: taxable + gst);
-  }
+  static double total({required double gross, required double discount}) =>
+      gross - discount;
 
   static int sessionsAllocated(double paid, double sessionPrice) =>
       sessionPrice > 0 ? (paid / sessionPrice).floor() : 0;
@@ -67,7 +59,7 @@ class InvoicePdf {
     return '${groups.join(',')},$last3';
   }
 
-  /// Course/plan invoice: months allocated + valid till + GST.
+  /// Course/plan invoice: months allocated + valid till.
   Future<File> generateCourseInvoice({
     required AppStore store,
     required Student s,
@@ -84,8 +76,7 @@ class InvoicePdf {
   }) async {
     final doc = await _base(store, date, (ctx, base, b, blk) {
       final gross = planPrice + admissionFee;
-      final m = InvoiceMath.calc(
-          gross: gross, discount: discount, gstRate: store.gstRate);
+      final total = InvoiceMath.total(gross: gross, discount: discount);
       return [
         _memberBlock(
             ctx,
@@ -101,13 +92,13 @@ class InvoicePdf {
               _kv('Valid till', fmtDate(validTill, forceYear: true), base, b),
             ]),
         _amountBlock(ctx, base, b, blk, admissionFee, planPrice, discount,
-            store.gstRate, m, paid, balance),
+            total, paid, balance),
       ];
     });
     return _save(doc, 'invoice_${s.jdNo}_${date.millisecondsSinceEpoch}.pdf');
   }
 
-  /// Personal training invoice: sessions allocated + GST.
+  /// Personal training invoice: sessions allocated.
   Future<File> generatePtInvoice({
     required AppStore store,
     required Student s,
@@ -120,8 +111,7 @@ class InvoicePdf {
   }) async {
     final doc = await _base(store, date, (ctx, base, b, blk) {
       final gross = sessionsAllocated * sessionPrice;
-      final m = InvoiceMath.calc(
-          gross: gross, discount: discount, gstRate: store.gstRate);
+      final total = InvoiceMath.total(gross: gross, discount: discount);
       final meta = [
         if (s.ptDays.isNotEmpty) s.ptDays,
         if (s.ptTiming.isNotEmpty) s.ptTiming,
@@ -138,8 +128,8 @@ class InvoicePdf {
               _kv('Charge per session', rs(sessionPrice), base, b),
               if (meta.isNotEmpty) _kv('Days · Timing', meta, base, b),
             ]),
-        _amountBlock(ctx, base, b, blk, 0, gross, discount, store.gstRate, m,
-            paid, balance),
+        _amountBlock(ctx, base, b, blk, 0, gross, discount, total, paid,
+            balance),
       ];
     });
     return _save(doc, 'invoice_${s.jdNo}_${date.millisecondsSinceEpoch}.pdf');
@@ -184,8 +174,7 @@ class InvoicePdf {
       double admissionFee,
       double gross,
       double discount,
-      double gstRate,
-      ({double taxable, double gst, double total}) m,
+      double total,
       double paid,
       double balance) {
     pw.Widget amt(String label, String value, {PdfColor? color, bool bold = false}) =>
@@ -205,21 +194,19 @@ class InvoicePdf {
             ],
           ),
         );
+    final netCourse = (gross - discount).clamp(0.0, double.infinity);
+    final netTotal = netCourse + admissionFee;
     return pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
       children: [
         pw.SizedBox(height: 6),
         pw.Container(height: 1, color: _gold),
         pw.SizedBox(height: 8),
-        if (admissionFee > 0) amt('Admission fee', rs(admissionFee)),
-        if (gross > 0) amt('Subtotal', rs(gross)),
-        amt('Discount', discount > 0 ? '- ${rs(discount)}' : '—',
-            color: _green),
-        if (gstRate > 0) ...[
-          amt('Taxable value', rs(m.taxable)),
-          amt('GST ($gstAmountText(gstRate))', rs(m.gst), color: _gold),
+        if (admissionFee > 0) ...[
+          amt('Admission fee', rs(admissionFee)),
+          if (netCourse > 0) amt('Course fee', rs(netCourse)),
         ],
-        amt('Total', rs(m.total), bold: true, color: _gold),
+        amt('Total', rs(netTotal), bold: true, color: _gold),
         pw.SizedBox(height: 6),
         pw.Container(height: 1, color: _gold),
         pw.SizedBox(height: 8),
@@ -229,11 +216,6 @@ class InvoicePdf {
             bold: true, color: balance > 0 ? _red : _green),
       ],
     );
-  }
-
-  String gstAmountText(double rate) {
-    final r = rate.toStringAsFixed(rate == rate.roundToDouble() ? 0 : 2);
-    return '$r%';
   }
 
   Future<pw.Document> _base(
@@ -267,13 +249,6 @@ class InvoicePdf {
                   pw.Text('Phone: ${studio.phone}',
                       style:
                           pw.TextStyle(font: base, fontSize: 9, color: _muted)),
-                if (store.gstin.isNotEmpty)
-                  pw.Padding(
-                    padding: const pw.EdgeInsets.only(top: 3),
-                    child: pw.Text('GSTIN: ${store.gstin}',
-                        style:
-                            pw.TextStyle(font: b, fontSize: 9, color: _gold)),
-                  ),
               ],
             ),
           ),

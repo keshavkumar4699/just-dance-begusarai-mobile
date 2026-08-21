@@ -57,26 +57,21 @@ class Repos {
   Future<int> insertCourse(Course c) async => (await _db).insert('courses', c.toMap());
   Future<void> updateCourse(Course c) async =>
       (await _db).update('courses', c.toMap(), where: 'id=?', whereArgs: [c.id]);
-  Future<void> deleteCourse(int id) async =>
-      (await _db).delete('courses', where: 'id=?', whereArgs: [id]);
+  Future<void> deleteCourse(int id) async {
+    final d = await _db;
+    await d.delete('courses', where: 'id=?', whereArgs: [id]);
+    await d.delete('courseInterests', where: 'courseId=?', whereArgs: [id]);
+  }
 
-  Future<List<Batch>> allBatches() async =>
-      (await (await _db).query('batches', orderBy: 'name COLLATE NOCASE'))
-          .map(Batch.fromMap)
+  // ---------- Course Interests ----------
+  Future<List<CourseInterest>> allCourseInterests() async =>
+      (await (await _db).query('courseInterests', orderBy: 'name COLLATE NOCASE'))
+          .map(CourseInterest.fromMap)
           .toList();
-  Future<int> insertBatch(Batch b) async => (await _db).insert('batches', b.toMap());
-  Future<void> updateBatch(Batch b) async =>
-      (await _db).update('batches', b.toMap(), where: 'id=?', whereArgs: [b.id]);
-  Future<void> deleteBatch(int id) async =>
-      (await _db).delete('batches', where: 'id=?', whereArgs: [id]);
-
-  Future<List<BatchTiming>> allTimings() async =>
-      (await (await _db).query('timings')).map(BatchTiming.fromMap).toList();
-  Future<int> insertTiming(BatchTiming t) async => (await _db).insert('timings', t.toMap());
-  Future<void> updateTiming(BatchTiming t) async =>
-      (await _db).update('timings', t.toMap(), where: 'id=?', whereArgs: [t.id]);
-  Future<void> deleteTiming(int id) async =>
-      (await _db).delete('timings', where: 'id=?', whereArgs: [id]);
+  Future<int> insertCourseInterest(CourseInterest ci) async =>
+      (await _db).insert('courseInterests', ci.toMap());
+  Future<void> deleteCourseInterest(int id) async =>
+      (await _db).delete('courseInterests', where: 'id=?', whereArgs: [id]);
 
   Future<List<Plan>> allPlans() async =>
       (await (await _db).query('plans', orderBy: 'months')).map(Plan.fromMap).toList();
@@ -118,8 +113,7 @@ class Repos {
     return {
       'students': await q('students'),
       'courses': await q('courses'),
-      'batches': await q('batches'),
-      'timings': await q('timings'),
+      'courseInterests': await q('courseInterests'),
       'plans': await q('plans'),
       'studentCourses': await q('studentCourses'),
       'attendance': await q('attendance'),
@@ -132,13 +126,13 @@ class Repos {
     final d = await _db;
     await d.transaction((txn) async {
       for (final t in [
-        'students', 'courses', 'batches', 'timings', 'plans',
+        'students', 'courses', 'courseInterests', 'plans',
         'studentCourses', 'attendance', 'ledger', 'settings'
       ]) {
         await txn.delete(t);
       }
       for (final t in [
-        'courses', 'batches', 'timings', 'plans', 'students',
+        'courses', 'courseInterests', 'plans', 'students',
         'studentCourses', 'attendance', 'ledger', 'settings'
       ]) {
         for (final row in data[t] ?? const []) {

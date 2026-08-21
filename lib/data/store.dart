@@ -34,8 +34,7 @@ class AppStore extends ChangeNotifier {
   // ----- caches -----
   List<Student> students = [];
   List<Course> courses = [];
-  List<Batch> batches = [];
-  List<BatchTiming> timings = [];
+  List<CourseInterest> interests = [];
   List<Plan> plans = [];
   List<StudentCourse> studentCourses = [];
   List<AttendanceRow> attendance = [];
@@ -47,8 +46,6 @@ class AppStore extends ChangeNotifier {
   StudioInfo studio = StudioInfo();
   Map<String, String> templates = Map.of(kDefaultTemplates);
   double admissionFeeAmount = 0;
-  String gstin = '';
-  double gstRate = 0; // percent, 0 = GST off
   double ptDefaultSessionPrice = 0; // studio default ₹/session
   String ptDefaultDuration = ''; // e.g. "1 hour"
   String ptDefaultDays = ''; // e.g. "Mon,Wed,Fri"
@@ -70,8 +67,7 @@ class AppStore extends ChangeNotifier {
     final r = Repos.instance;
     students = await r.allStudents();
     courses = await r.allCourses();
-    batches = await r.allBatches();
-    timings = await r.allTimings();
+    interests = await r.allCourseInterests();
     plans = await r.allPlans();
     studentCourses = await r.allStudentCourses();
     attendance = await r.allAttendance();
@@ -92,9 +88,6 @@ class AppStore extends ChangeNotifier {
     }
     admissionFeeAmount =
         double.tryParse(await r.getSetting(kPrefAdmissionFee) ?? '') ?? 0;
-    gstin = await r.getSetting(kPrefGstin) ?? '';
-    gstRate =
-        double.tryParse(await r.getSetting(kPrefGstRate) ?? '') ?? 0;
     ptDefaultSessionPrice =
         double.tryParse(await r.getSetting(kPrefPtSessionPrice) ?? '') ?? 0;
     ptDefaultDuration = await r.getSetting(kPrefPtDuration) ?? '';
@@ -152,18 +145,26 @@ class AppStore extends ChangeNotifier {
     return null;
   }
 
-  Batch? batchById(int id) {
-    for (final b in batches) {
-      if (b.id == id) return b;
+  List<CourseInterest> interestsOf(int courseId) =>
+      interests.where((e) => e.courseId == courseId).toList();
+
+  CourseInterest? interestById(int id) {
+    for (final ci in interests) {
+      if (ci.id == id) return ci;
     }
     return null;
   }
 
-  BatchTiming? timingById(int id) {
-    for (final t in timings) {
-      if (t.id == id) return t;
-    }
-    return null;
+  static String batchTypeLabel(int batchId) {
+    if (batchId == kBatchWeekend) return kBatchWeekendFullLabel;
+    if (batchId == kBatchWeekdays) return kBatchWeekdaysFullLabel;
+    return '';
+  }
+
+  static String batchShortLabel(int batchId) {
+    if (batchId == kBatchWeekend) return kBatchWeekendLabel;
+    if (batchId == kBatchWeekdays) return kBatchWeekdaysLabel;
+    return '';
   }
 
   Plan? planById(int? id) {
@@ -196,26 +197,44 @@ class AppStore extends ChangeNotifier {
     return list.isEmpty ? null : list.first;
   }
 
+  /// Returns all entries of the most recent payment transaction
+  /// (grouping companion entries like admission fee + course fee created in the exact same action).
+  List<LedgerEntry> lastPaymentTransactionOf(int studentId) {
+    final list = ledgerOf(studentId)
+        .where((e) =>
+            e.type == kLedgerPayment ||
+            e.type == kLedgerAdmissionFee ||
+            e.type == kLedgerPtPayment)
+        .toList()
+      ..sort((a, b) {
+        final c = b.date.compareTo(a.date);
+        return c != 0 ? c : b.id.compareTo(a.id);
+      });
+    if (list.isEmpty) return [];
+    final latest = list.first;
+    return list
+        .where((e) =>
+            (e.id - latest.id).abs() <= 1 &&
+            e.date.difference(latest.date).abs().inMilliseconds < 1000)
+        .toList();
+  }
+
   List<AttendanceRow> attendanceOf(int studentId) =>
       attendance.where((e) => e.studentId == studentId).toList();
 
-  FeeState feeStateOf(Student s) => FeeState(
-        monthsCovered: s.monthsCovered,
-        credit: s.credit,
-        admissionFeePaidAmount: ledgerOf(s.id)
-            .where((e) => e.type == kLedgerAdmissionFee)
-            .fold(0.0, (a, e) => a + e.paidAmount),
-        ptPaid: s.ptPaid,
-      );
+  FeeState feeStateOf(Student s) => FeeEngine.replay(ledgerOf(s.id));
 
-  FeeStatus statusOf(Student s, {DateTime? today}) => FeeEngine.status(
-        state: feeStateOf(s),
-        cyclePrice: cyclePriceOf(s.id),
-        admissionFeeAmount: admissionFeeAmount,
-        admissionFeeEnabled: s.admissionFeeEnabled,
-        admissionDate: s.admissionDate,
-        today: today ?? DateTime.now(),
-      );
+  FeeStatus statusOf(Student s, {DateTime? today}) {
+    final admAmount = s.admissionFeeAmount > 0 ? s.admissionFeeAmount : admissionFeeAmount;
+    return FeeEngine.status(
+      state: feeStateOf(s),
+      cyclePrice: cyclePriceOf(s.id),
+      admissionFeeAmount: admAmount,
+      admissionFeeEnabled: s.admissionFeeEnabled,
+      admissionDate: s.admissionDate,
+      today: today ?? DateTime.now(),
+    );
+  }
 
   /// Single realtime bucket for a student (blocked > expired > inactive >
   /// nearExpiry > active). Use [statusOf] for money facts.
@@ -256,14 +275,22 @@ class AppStore extends ChangeNotifier {
       if (e.isPrimary) sc = e;
     }
     final c = courseById(sc.courseId);
-    final b = batchById(sc.batchId);
-    final t = timingById(sc.timingId);
+    final bLabel = batchShortLabel(sc.batchId);
+    final interestNames = <String>[];
+    if (sc.interests.isNotEmpty) {
+      final ids = sc.interests
+          .split(',')
+          .map((e) => int.tryParse(e.trim()))
+          .whereType<int>();
+      for (final id in ids) {
+        final ci = interestById(id);
+        if (ci != null) interestNames.add(ci.name);
+      }
+    }
     return [
       if (c != null) c.name,
-      if (b != null) b.name,
-      if (b != null && b.daysInfo.isNotEmpty) b.daysInfo,
-      if (b != null && b.duration.isNotEmpty) b.duration,
-      if (t != null) t.label,
+      if (bLabel.isNotEmpty) bLabel,
+      if (interestNames.isNotEmpty) interestNames.join(', '),
     ].join(' · ');
   }
 
@@ -386,6 +413,7 @@ class AppStore extends ChangeNotifier {
     final entries = ledgerOf(s.id);
     final state = FeeEngine.replay(entries);
     final price = cyclePriceOf(s.id);
+    final admAmount = s.admissionFeeAmount > 0 ? s.admissionFeeAmount : admissionFeeAmount;
     var wrote = 0;
     final conversions = FeeEngine.autoConsume(state, price);
     for (var i = 0; i < conversions; i++) {
@@ -403,43 +431,146 @@ class AppStore extends ChangeNotifier {
     }
     s.monthsCovered = state.monthsCovered;
     s.credit = state.credit;
+    s.monthsCoveredMoney = state.monthsCoveredMoney;
+    s.creditMoney = state.creditMoney;
     s.cycleBalance = state.cycleBalance(price);
-    s.admissionFeePaid = admissionFeeAmount > 0 &&
-        state.admissionFeePaidAmount >= admissionFeeAmount - 0.004;
+    s.admissionFeePaid = admAmount > 0 &&
+        state.admissionFeePaidAmount >= admAmount - 0.004;
     s.ptPaid = state.ptPaid;
     if (persist || wrote > 0) await Repos.instance.updateStudent(s);
     return wrote;
   }
 
-  /// Records a payment (admission fee portion + plan portion + discount),
+  /// Records a PLAN_TERM entry (snapshots term duration, price, and plan discount).
+  Future<LedgerEntry> addPlanTerm({
+    required Student s,
+    required int months,
+    required double cyclePrice,
+    double discount = 0,
+    DateTime? date,
+    String note = '',
+  }) async {
+    final now = date ?? DateTime.now();
+    final e = LedgerEntry(
+      studentId: s.id,
+      date: now,
+      type: kLedgerPlanTerm,
+      monthLabel: monthLabel(now),
+      cyclePrice: cyclePrice,
+      termMonths: months,
+      discount: discount,
+      note: note,
+    );
+    e.id = await Repos.instance.insertLedger(e);
+    ledger.add(e);
+    await _refoldStudent(s, persist: true);
+    _changed();
+    return e;
+  }
+
+  /// Records an ADMISSION_FEE_PAID entry on a specific date (e.g. back-dated admission date).
+  Future<LedgerEntry> markAdmissionFeePaid(
+    Student s, {
+    DateTime? date,
+    String mode = kModeCash,
+    double? amount,
+    String note = 'Admission fee',
+  }) async {
+    final fee = amount ?? (s.admissionFeeAmount > 0 ? s.admissionFeeAmount : admissionFeeAmount);
+    final now = date ?? s.admissionDate;
+    final dueBefore = statusOf(s, today: now).due;
+    final e = LedgerEntry(
+      studentId: s.id,
+      date: now,
+      type: kLedgerAdmissionFee,
+      monthLabel: monthLabel(now),
+      dueAmount: dueBefore,
+      paidAmount: fee,
+      mode: mode,
+      note: note,
+    );
+    e.id = await Repos.instance.insertLedger(e);
+    ledger.add(e);
+    await _refoldStudent(s, persist: true);
+    _changed();
+    return e;
+  }
+
+  /// Records a payment (admission fee portion + plan portion + discounts),
   /// writes ledger entries, refolds state. Returns the saved entries.
   Future<List<LedgerEntry>> addPayment({
     required Student s,
     required double amount, // actual money received
-    required double discount, // extra value given free
     required String mode,
+    double discount = 0, // total or manual discount fallback
+    int? planId,
+    double manualDiscount = 0,
     String note = '',
     DateTime? date,
+    bool isRenewal = false,
   }) async {
     final now = date ?? DateTime.now();
     final state = feeStateOf(s);
     final price = cyclePriceOf(s.id);
-    final admissionRemaining = s.admissionFeeEnabled
-        ? (admissionFeeAmount - state.admissionFeePaidAmount)
+    final selectedPlanId = planId ?? s.planId;
+    final plan = planById(selectedPlanId);
+    final planMonths = plan?.months ?? 1;
+    final planDiscountType = plan?.discountType ?? '';
+    final planDiscountValue = plan?.discountValue ?? 0;
+    final effManualDiscount = manualDiscount > 0 ? manualDiscount : discount;
+    final admAmount = s.admissionFeeAmount > 0 ? s.admissionFeeAmount : admissionFeeAmount;
+
+    final admissionRemaining = s.admissionFeeEnabled && !s.admissionFeePaid
+        ? (admAmount - state.admissionFeePaidAmount)
             .clamp(0.0, double.infinity)
         : 0.0;
     final dueBefore = statusOf(s, today: now).due;
 
+    final saved = <LedgerEntry>[];
+    final r = Repos.instance;
+
+    // If renewing with a plan or starting a new plan term:
+    if (isRenewal && selectedPlanId != null) {
+      final calc = FeeEngine.calculatePlanFee(
+        monthlyFee: price,
+        planMonths: planMonths,
+        discountType: planDiscountType,
+        discountValue: planDiscountValue,
+        manualDiscount: effManualDiscount,
+      );
+      // Anchor renewal at max(paidTill, now)
+      final currentStatus = statusOf(s, today: now);
+      final termStart = currentStatus.paidTill.isAfter(now) ? currentStatus.paidTill : now;
+      final termEntry = LedgerEntry(
+        studentId: s.id,
+        date: termStart,
+        type: kLedgerPlanTerm,
+        monthLabel: monthLabel(termStart),
+        cyclePrice: price,
+        termMonths: planMonths,
+        discount: calc.multipleMonthsDiscount,
+        note: plan?.name ?? '',
+      );
+      termEntry.id = await r.insertLedger(termEntry);
+      saved.add(termEntry);
+      ledger.add(termEntry);
+    }
+
+    // Refresh state after potential plan term
+    final freshState = feeStateOf(s);
+
     final split = FeeEngine.applyPayment(
-      state: state,
+      state: freshState,
       amount: amount,
       cyclePrice: price,
       admissionFeeRemaining: admissionRemaining,
-      discount: discount,
+      isAdmissionFeeLevied: s.admissionFeeEnabled,
+      isAdmissionFeePaid: s.admissionFeePaid,
+      planMonths: planMonths,
+      planDiscountType: planDiscountType,
+      planDiscountValue: planDiscountValue,
+      manualDiscount: effManualDiscount,
     );
-
-    final saved = <LedgerEntry>[];
-    final r = Repos.instance;
 
     if (split.toAdmission > 0) {
       final e = LedgerEntry(
@@ -456,12 +587,12 @@ class AppStore extends ChangeNotifier {
       saved.add(e);
       ledger.add(e);
     }
-    if (split.toPlan > 0 || discount > 0) {
+    if (split.toPlan > 0 || split.totalDiscount > 0) {
       // Simulate post-payment state for the "Baki/Advance" column.
       final after = FeeEngine.status(
-        state: state,
+        state: freshState,
         cyclePrice: price,
-        admissionFeeAmount: admissionFeeAmount,
+        admissionFeeAmount: admAmount,
         admissionFeeEnabled: s.admissionFeeEnabled,
         admissionDate: s.admissionDate,
         today: now,
@@ -472,9 +603,10 @@ class AppStore extends ChangeNotifier {
         date: now,
         type: kLedgerPayment,
         monthLabel: monthLabel(now),
-        dueAmount: dueBefore - split.toAdmission,
+        dueAmount: (dueBefore - split.toAdmission).clamp(0.0, double.infinity),
         paidAmount: split.toPlan,
-        discount: discount,
+        discount: split.totalDiscount,
+        planDiscount: split.multipleMonthsDiscount,
         balanceOrCredit: bal,
         mode: mode,
         note: note,
@@ -485,15 +617,32 @@ class AppStore extends ChangeNotifier {
       ledger.add(e);
     }
 
-    // Persist folded state back onto the student row.
-    s.monthsCovered = state.monthsCovered;
-    s.credit = state.credit;
-    s.cycleBalance = state.cycleBalance(price);
-    s.admissionFeePaid = admissionFeeAmount > 0 &&
-        state.admissionFeePaidAmount >= admissionFeeAmount - 0.004;
+    if (selectedPlanId != null && selectedPlanId != s.planId) {
+      s.planId = selectedPlanId;
+    }
+
     await _refoldStudent(s, persist: true);
     _changed();
     return saved;
+  }
+
+  Future<void> recordPtPayment(Student s, double amount, String mode) async {
+    final now = DateTime.now();
+    final e = LedgerEntry(
+      studentId: s.id,
+      date: now,
+      type: kLedgerPayment,
+      monthLabel: monthLabel(now),
+      dueAmount: 0,
+      paidAmount: amount,
+      discount: 0,
+      balanceOrCredit: 0,
+      mode: mode,
+      note: 'Personal Training',
+    );
+    e.id = await Repos.instance.insertLedger(e);
+    ledger.add(e);
+    _changed();
   }
 
   Future<void> changePlan(Student s, int planId) async {
@@ -542,41 +691,16 @@ class AppStore extends ChangeNotifier {
     _changed();
   }
 
-  /// Students assigned to [batchId] (via their course enrolment).
-  List<Student> studentsOfBatch(int batchId) {
-    final ids = studentCourses
-        .where((e) => e.batchId == batchId)
-        .map((e) => e.studentId)
-        .toSet();
-    return students
-        .where((s) => ids.contains(s.id) && !s.isBlocked)
-        .toList();
-  }
-
-  // ================= personal training =================
-
-  Future<void> recordPtPayment(Student s, double amount, String mode) async {
-    final e = LedgerEntry(
-      studentId: s.id,
-      type: kLedgerPtPayment,
-      monthLabel: monthLabel(DateTime.now()),
-      dueAmount: ptRechargeNeed(s),
-      paidAmount: amount,
-      mode: mode,
-      note: 'Personal training',
-    );
-    e.id = await Repos.instance.insertLedger(e);
-    ledger.add(e);
-    s.ptPaid += amount;
-    await Repos.instance.updateStudent(s);
-    _changed();
-  }
-
   // ================= catalog =================
 
   bool courseInUse(int id) => studentCourses.any((e) => e.courseId == id);
-  bool batchInUse(int id) => studentCourses.any((e) => e.batchId == id);
-  bool timingInUse(int id) => studentCourses.any((e) => e.timingId == id);
+  bool interestInUse(int interestId) {
+    final idStr = '$interestId';
+    return studentCourses.any((sc) {
+      if (sc.interests.isEmpty) return false;
+      return sc.interests.split(',').map((e) => e.trim()).contains(idStr);
+    });
+  }
   bool planInUse(int id) => students.any((e) => e.planId == id);
 
   Future<void> saveCourse(Course c) async {
@@ -595,61 +719,23 @@ class AppStore extends ChangeNotifier {
     if (courseInUse(c.id)) return 'in use';
     await Repos.instance.deleteCourse(c.id);
     courses.removeWhere((e) => e.id == c.id);
-    final orphanBatches = batches.where((b) => b.courseId == c.id).toList();
-    for (final b in orphanBatches) {
-      await Repos.instance.deleteBatch(b.id);
-      final orphanTimings = timings.where((t) => t.batchId == b.id).toList();
-      for (final t in orphanTimings) {
-        await Repos.instance.deleteTiming(t.id);
-      }
-      timings.removeWhere((t) => t.batchId == b.id);
-    }
-    batches.removeWhere((b) => b.courseId == c.id);
+    interests.removeWhere((ci) => ci.courseId == c.id);
     _changed();
     return null;
   }
 
-  Future<void> saveBatch(Batch b) async {
-    if (b.id == 0) {
-      b.id = await Repos.instance.insertBatch(b);
-      batches.add(b);
-    } else {
-      await Repos.instance.updateBatch(b);
-      final i = batches.indexWhere((e) => e.id == b.id);
-      if (i >= 0) batches[i] = b;
+  Future<void> saveCourseInterest(CourseInterest ci) async {
+    if (ci.id == 0) {
+      ci.id = await Repos.instance.insertCourseInterest(ci);
+      interests.add(ci);
     }
     _changed();
   }
 
-  Future<String?> deleteBatch(Batch b) async {
-    if (batchInUse(b.id)) return 'in use';
-    await Repos.instance.deleteBatch(b.id);
-    batches.removeWhere((e) => e.id == b.id);
-    final orphans = timings.where((t) => t.batchId == b.id).toList();
-    for (final t in orphans) {
-      await Repos.instance.deleteTiming(t.id);
-    }
-    timings.removeWhere((t) => t.batchId == b.id);
-    _changed();
-    return null;
-  }
-
-  Future<void> saveTiming(BatchTiming t) async {
-    if (t.id == 0) {
-      t.id = await Repos.instance.insertTiming(t);
-      timings.add(t);
-    } else {
-      await Repos.instance.updateTiming(t);
-      final i = timings.indexWhere((e) => e.id == t.id);
-      if (i >= 0) timings[i] = t;
-    }
-    _changed();
-  }
-
-  Future<String?> deleteTiming(BatchTiming t) async {
-    if (timingInUse(t.id)) return 'in use';
-    await Repos.instance.deleteTiming(t.id);
-    timings.removeWhere((e) => e.id == t.id);
+  Future<String?> deleteCourseInterest(CourseInterest ci) async {
+    if (interestInUse(ci.id)) return 'in use';
+    await Repos.instance.deleteCourseInterest(ci.id);
+    interests.removeWhere((e) => e.id == ci.id);
     _changed();
     return null;
   }
@@ -704,14 +790,6 @@ class AppStore extends ChangeNotifier {
     admissionFeeAmount = v;
     await Repos.instance.setSetting(kPrefAdmissionFee, v.toString());
     await recomputeAll();
-    _changed();
-  }
-
-  Future<void> setGstInfo({required String gstin, required double rate}) async {
-    this.gstin = gstin.trim().toUpperCase();
-    gstRate = rate;
-    await Repos.instance.setSetting(kPrefGstin, this.gstin);
-    await Repos.instance.setSetting(kPrefGstRate, rate.toString());
     _changed();
   }
 
@@ -780,15 +858,57 @@ class AppStore extends ChangeNotifier {
     };
   }
 
+  Map<String, List<Map<String, Object?>>> normalizeBackupData(
+      Map<String, List<Map<String, Object?>>> data) {
+    final map = Map<String, List<Map<String, Object?>>>.from(data);
+    final oldBatches = map.remove('batches') ?? const [];
+    map.remove('timings');
+
+    final oldBatchMap = <int, bool>{};
+    for (final b in oldBatches) {
+      final id = b['id'] as int?;
+      if (id == null) continue;
+      final name = (b['name'] as String? ?? '').toLowerCase();
+      final days = (b['daysInfo'] as String? ?? '').toLowerCase();
+      oldBatchMap[id] = name.contains('week') ||
+          name.contains('sat') ||
+          name.contains('sun') ||
+          days.contains('week') ||
+          days.contains('sat') ||
+          days.contains('sun');
+    }
+
+    final scList = map['studentCourses'];
+    if (scList != null) {
+      final normalized = <Map<String, Object?>>[];
+      for (final sc in scList) {
+        final row = Map<String, Object?>.from(sc);
+        row.remove('timingId');
+        row['interests'] ??= '';
+        final oldBId = row['batchId'] as int? ?? 0;
+        if (oldBId > 0 && oldBatchMap.containsKey(oldBId)) {
+          row['batchId'] = oldBatchMap[oldBId]! ? kBatchWeekend : kBatchWeekdays;
+        } else if (oldBId > 2) {
+          row['batchId'] = kBatchWeekdays;
+        }
+        normalized.add(row);
+      }
+      map['studentCourses'] = normalized;
+    }
+
+    return map;
+  }
+
   /// Replaces the whole database with [data]; returns the previous dump so
   /// the caller can offer Undo. [photos] (base64) are written back to the
   /// photos dir and their paths remapped before caches reload.
   Future<Map<String, List<Map<String, Object?>>>> restoreFromBackup(
       Map<String, List<Map<String, Object?>>> data,
       {Map<String, String>? photos}) async {
+    final normalized = normalizeBackupData(data);
     final snapshot = await Repos.instance.dumpAll();
-    await Repos.instance.replaceAll(data);
-    await _writeRestoredPhotos(data, photos);
+    await Repos.instance.replaceAll(normalized);
+    await _writeRestoredPhotos(normalized, photos);
     await load(); // reload caches + settings
     await recomputeAll();
     return snapshot;
@@ -824,7 +944,8 @@ class AppStore extends ChangeNotifier {
   }
 
   Future<void> restoreSnapshot(Map<String, List<Map<String, Object?>>> snap) async {
-    await Repos.instance.replaceAll(snap);
+    final normalized = normalizeBackupData(snap);
+    await Repos.instance.replaceAll(normalized);
     await load();
     await recomputeAll();
   }
